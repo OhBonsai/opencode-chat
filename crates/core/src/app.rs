@@ -5,6 +5,7 @@
 
 use crate::content::parse_markdown;
 use crate::frame::{FrameData, FrameGlyph};
+use crate::fsm::{TurnStatus, TurnTracker};
 use crate::protocol::{decode, parse_snapshot, Event};
 use crate::seam::{Connection, LayoutEngine, PlacedGlyph, RenderSink};
 use crate::smoother::Smoother;
@@ -69,6 +70,8 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     viewport_height: f32,
     /// 锚底:在底部时新内容跟随滚动(0002 §6)。
     stick_to_bottom: bool,
+    /// 回合收尾跟踪(Phase I):多信号 + 看门狗,解决"忘了 idle 卡死"。
+    turn: TurnTracker,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -87,7 +90,13 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             scroll_offset: 0.0,
             viewport_height: 600.0,
             stick_to_bottom: true,
+            turn: TurnTracker::new(),
         }
+    }
+
+    /// 当前回合收尾状态(供宿主显示 loading / 收尾,Phase I)。
+    pub fn turn_status(&self) -> TurnStatus {
+        self.turn.status()
     }
 
     /// 设视口高度(画布尺寸变化时);视口裁剪与锚底据此。
@@ -156,6 +165,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// 推进一帧。
     pub fn frame(&mut self, dt_ms: f64) {
         self.now_ms += dt_ms;
+        self.turn.tick(self.now_ms);
         self.ingest_events();
         self.enqueue_new_text();
         self.reveal(dt_ms);
@@ -173,11 +183,23 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     field,
                     delta,
                     ..
-                }) => self
-                    .store
-                    .apply_delta(&part_id, &message_id, &field, &delta),
-                Ok(Event::PartUpdated { part, .. }) => self.store.apply_part_updated(&part),
-                // 状态/心跳/握手/未知:Plan1 不改文档状态(AR12)。
+                }) => {
+                    self.store
+                        .apply_delta(&part_id, &message_id, &field, &delta);
+                    self.turn.on_activity(self.now_ms);
+                }
+                Ok(Event::PartUpdated { part, .. }) => {
+                    self.store.apply_part_updated(&part);
+                    self.turn.on_activity(self.now_ms);
+                }
+                // 会话状态:idle/完成 → 收尾信号;busy/retry → 仍活跃(Phase I)。
+                Ok(Event::SessionStatus { status }) => match status.as_str() {
+                    "idle" => self.turn.on_settle_signal(),
+                    "busy" | "retry" | "working" => self.turn.on_busy(),
+                    _ => {}
+                },
+                Ok(Event::MessageUpdated) => self.turn.on_activity(self.now_ms),
+                // 心跳/握手/未知:不改文档状态(AR12)。
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(target: "M2", error = %e, "丢弃无法解码的事件");
@@ -509,5 +531,24 @@ mod tests {
         let visible = eng.sink().visible_text();
         assert!(visible.contains("EEEE"), "底部块应可见: {visible}");
         assert!(!visible.contains("AAAA"), "顶部块应被裁剪: {visible}");
+    }
+
+    #[test]
+    fn turn_settles_via_watchdog_even_without_idle() {
+        // Phase I:delta 到达 → Active;之后久无事件(模型忘了 idle)→ 看门狗强制收尾。
+        let player = Player::from_pairs(vec![(0.0, delta("p", "hi"))], 16.0);
+        let mut eng = Engine::new(
+            player,
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            500.0,
+            800.0,
+        );
+        eng.frame(16.0);
+        assert_eq!(eng.turn_status(), crate::TurnStatus::Active);
+        for _ in 0..6 {
+            eng.frame(8_000.0); // 推进 ~48s,无新事件
+        }
+        assert_eq!(eng.turn_status(), crate::TurnStatus::Settled);
     }
 }

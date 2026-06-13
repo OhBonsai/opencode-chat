@@ -34,8 +34,8 @@ pub enum Event {
     PartUpdated { part: Part, time: f64 },
     /// 最小占位(Plan1 不读细节)。
     MessageUpdated,
-    /// 会话状态(idle/busy/retry),Plan1 仅识别不处理。
-    SessionStatus,
+    /// 会话状态:`idle` / `busy` / `retry`(收尾判定用,Phase I)。
+    SessionStatus { status: String },
     /// 首发握手。
     Connected,
     /// 10s 心跳。
@@ -144,7 +144,23 @@ pub fn decode(raw: &str) -> Result<Event, ProtocolError> {
             }
         }
         "message.updated" => Event::MessageUpdated,
-        "session.status" => Event::SessionStatus,
+        "session.status" => {
+            // properties.status 可能是 {type:"busy"} 或直接字符串 "busy"。
+            let status = env
+                .properties
+                .get("status")
+                .and_then(|s| {
+                    s.get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| s.as_str())
+                })
+                .unwrap_or_default()
+                .to_owned();
+            Event::SessionStatus { status }
+        }
+        "session.idle" => Event::SessionStatus {
+            status: "idle".to_owned(),
+        },
         "server.connected" => Event::Connected,
         "server.heartbeat" => Event::Heartbeat,
         _ => Event::Ignored,
