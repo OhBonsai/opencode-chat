@@ -165,6 +165,7 @@ async fn init_and_run(
         profile: EffectProfile::Full,
     };
     let mut engine = Engine::new(conn, layout, sink, 200.0, width as f32);
+    engine.set_viewport_height(height as f32);
     if let Some(sid) = session_id {
         engine.set_target_session(Some(sid));
     }
@@ -193,6 +194,20 @@ async fn init_and_run(
         request_animation_frame(cb);
     }
 
+    // 滚轮 → 滚动(Phase G)。挂在 canvas 上(元素级 wheel 默认非 passive),preventDefault
+    // 能阻止页面滚动。deltaY 为设备无关像素,直接喂 scroll_by(world unit = 设备 px,见缩放)。
+    let state_w = state.clone();
+    let on_wheel = Closure::wrap(Box::new(move |e: web_sys::WheelEvent| {
+        e.prevent_default();
+        let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
+        let dy = (e.delta_y() * dpr) as f32;
+        if let Some(app) = state_w.borrow_mut().as_mut() {
+            app.engine.scroll_by(dy);
+        }
+    }) as Box<dyn FnMut(web_sys::WheelEvent)>);
+    let _ = canvas.add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref());
+    on_wheel.forget();
+
     // 窗口尺寸变化:重设后备缓冲(设备像素)→ 重配 surface + 更新排版宽度。
     let canvas_r = canvas.clone();
     let state_r = state.clone();
@@ -205,6 +220,7 @@ async fn init_and_run(
         if let Some(app) = state_r.borrow_mut().as_mut() {
             app.engine.sink_mut().resize(w, h);
             app.engine.set_max_width(w as f32);
+            app.engine.set_viewport_height(h as f32);
         }
     }) as Box<dyn FnMut()>);
     if let Some(win) = web_sys::window() {

@@ -6,7 +6,7 @@
 use crate::content::plain;
 use crate::frame::{FrameData, FrameGlyph};
 use crate::protocol::{decode, parse_snapshot, Event};
-use crate::seam::{Connection, LayoutEngine, RenderSink};
+use crate::seam::{Connection, LayoutEngine, LayoutResult, PlacedGlyph, RenderSink};
 use crate::smoother::Smoother;
 use crate::store::Store;
 use crate::support::graphemes;
@@ -14,17 +14,34 @@ use crate::support::graphemes;
 /// catch-up 字形的 spawn_time:置于"远古",着色器淡入早已完成(alpha=1),实现零动画(AR6)。
 const CATCHUP_SPAWN: f32 = -1.0e9;
 
-/// 每个可见 part 的上屏进度。
+/// 块间纵向间距(px)。
+const BLOCK_GAP: f32 = 8.0;
+
+/// 锚底阈值:滚到离底 ≤ 此值即重新跟随新内容(0002 §6)。
+const ANCHOR_THRESHOLD: f32 = 48.0;
+
+/// 已排版块的缓存(Phase G 块冻结):内容/宽度不变则不重排,根治每帧全量重排。
+struct BlockCache {
+    /// 排版时的 grapheme 数(变了即脏)。
+    revealed_len: usize,
+    /// 排版时的宽度(变了即脏)。
+    width: f32,
+    /// 块内相对位置(与 `revealed` 顺序 1:1;cluster/spawn 仍取自 revealed)。
+    placed: Vec<PlacedGlyph>,
+    /// 块高度。
+    height: f32,
+}
+
+/// 每个可见 part 的上屏进度 + 排版缓存。
 struct PartView {
     part_id: String,
     /// 已 push 进 smoother 的 grapheme 数(对账后从尾部续推)。
     pushed: usize,
     /// 已上屏的 (grapheme, spawn_time_ms),按上屏顺序。
     revealed: Vec<(String, f32)>,
+    /// 排版缓存(冻结);None 或脏时重排。
+    cache: Option<BlockCache>,
 }
-
-/// 块间纵向间距(px)。
-const BLOCK_GAP: f32 = 8.0;
 
 /// 每帧编排引擎。`C` 事件源、`L` 排版、`R` 渲染汇均经 seam 注入(CR2)。
 pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
@@ -38,6 +55,12 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     max_width: f32,
     /// 只渲染该 session 的 part(`?session=`);None = 全渲染(Plan1 行为)。
     target_session: Option<String>,
+    /// 从顶部下滚的像素(0 = 顶部)。
+    scroll_offset: f32,
+    /// 视口高度(px),视口裁剪与锚底用。
+    viewport_height: f32,
+    /// 锚底:在底部时新内容跟随滚动(0002 §6)。
+    stick_to_bottom: bool,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -53,6 +76,22 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             now_ms: 0.0,
             max_width,
             target_session: None,
+            scroll_offset: 0.0,
+            viewport_height: 600.0,
+            stick_to_bottom: true,
+        }
+    }
+
+    /// 设视口高度(画布尺寸变化时);视口裁剪与锚底据此。
+    pub fn set_viewport_height(&mut self, height: f32) {
+        self.viewport_height = height.max(1.0);
+    }
+
+    /// 滚动 `dy` 像素(正 = 向下/看更新内容)。向上滚脱离锚底,滚回底部自动重新跟随。
+    pub fn scroll_by(&mut self, dy: f32) {
+        self.scroll_offset += dy;
+        if dy < 0.0 {
+            self.stick_to_bottom = false;
         }
     }
 
@@ -170,40 +209,103 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
     }
 
-    /// 4/5) content 直通 → layout 定位 → 组 FrameData(纵向堆叠各 part)。
-    fn build_frame(&mut self) -> FrameData {
-        let mut glyphs = Vec::new();
-        let mut y = 0.0f32;
-        for view in &self.views {
-            // session 过滤(Phase F):目标已设且该 part 归属已知且不匹配 → 跳过;
-            // 归属未知时乐观渲染(本地单会话常态),待 updated/snapshot 解析后收敛。
-            if let Some(target) = &self.target_session {
-                if let Some(sid) = self.store.part_session(&view.part_id) {
-                    if sid != target {
-                        continue;
-                    }
-                }
+    /// session 过滤(Phase F):目标已设且该 part 归属已知且不匹配 → 过滤掉。
+    /// 归属未知时乐观保留(本地单会话常态),待 updated/snapshot 解析后收敛。
+    fn is_filtered(&self, view: &PartView) -> bool {
+        if let Some(target) = &self.target_session {
+            if let Some(sid) = self.store.part_session(&view.part_id) {
+                return sid != target;
             }
-            let text: String = view.revealed.iter().map(|(c, _)| c.as_str()).collect();
-            if text.is_empty() {
+        }
+        false
+    }
+
+    /// 排版各块(Phase G 块冻结):内容长度/宽度不变的块跳过 layout 直接用缓存,只有正在
+    /// 生长的尾部块(或宽度变化)才重排——根治每帧全量重排。
+    fn ensure_layouts(&mut self) {
+        for i in 0..self.views.len() {
+            let len = self.views[i].revealed.len();
+            let dirty = match &self.views[i].cache {
+                Some(c) => c.revealed_len != len || (c.width - self.max_width).abs() > f32::EPSILON,
+                None => true,
+            };
+            if !dirty {
                 continue;
             }
-            let spans = plain(&text);
-            let result = self.layout.layout(&spans, self.max_width);
-            // layout 保证一字形对一 grapheme,与 revealed 顺序 1:1 对齐;cluster 文本取自
-            // revealed(layout 只回位置,CR4)。
-            for (placed, (cluster, spawn)) in result.glyphs.iter().zip(view.revealed.iter()) {
-                if cluster == "\n" {
-                    continue; // 换行不出字形,但仍消费 spawn 保持对齐
-                }
-                glyphs.push(FrameGlyph {
-                    cluster: cluster.clone(),
-                    pos: [placed.pos[0], placed.pos[1] + y],
-                    size: placed.size,
-                    spawn_time: *spawn,
-                });
+            let text: String = self.views[i]
+                .revealed
+                .iter()
+                .map(|(c, _)| c.as_str())
+                .collect();
+            let result = if text.is_empty() {
+                LayoutResult::default()
+            } else {
+                let spans = plain(&text);
+                self.layout.layout(&spans, self.max_width)
+            };
+            self.views[i].cache = Some(BlockCache {
+                revealed_len: len,
+                width: self.max_width,
+                placed: result.glyphs,
+                height: result.block_height,
+            });
+        }
+    }
+
+    /// 5) 组 FrameData:纵向堆叠各块,锚底 + 视口裁剪(屏外块不出 glyph,Phase G)。
+    fn build_frame(&mut self) -> FrameData {
+        self.ensure_layouts();
+
+        // 可绘制块(过滤掉非目标 session / 空块),累计内容高度。
+        let mut blocks: Vec<usize> = Vec::new();
+        let mut content_height = 0.0f32;
+        for (i, view) in self.views.iter().enumerate() {
+            if self.is_filtered(view) {
+                continue;
             }
-            y += result.block_height + BLOCK_GAP;
+            match &view.cache {
+                Some(c) if !c.placed.is_empty() => {
+                    blocks.push(i);
+                    content_height += c.height + BLOCK_GAP;
+                }
+                _ => {}
+            }
+        }
+
+        // 锚底 + 夹取滚动位置。
+        let max_scroll = (content_height - self.viewport_height).max(0.0);
+        if self.stick_to_bottom {
+            self.scroll_offset = max_scroll;
+        }
+        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
+        if self.scroll_offset >= max_scroll - ANCHOR_THRESHOLD {
+            self.stick_to_bottom = true;
+        }
+
+        // 裁剪 + 出 glyph。overscan 一屏,减少滚动边缘空白。
+        let overscan = self.viewport_height;
+        let mut glyphs = Vec::new();
+        let mut top = 0.0f32;
+        for &i in &blocks {
+            let view = &self.views[i];
+            let cache = view.cache.as_ref().expect("blocks 已筛选非空缓存"); // reason: 上面已保证
+            let bottom = top + cache.height;
+            let visible = bottom >= self.scroll_offset - overscan
+                && top <= self.scroll_offset + self.viewport_height + overscan;
+            if visible {
+                for (placed, (cluster, spawn)) in cache.placed.iter().zip(view.revealed.iter()) {
+                    if cluster == "\n" {
+                        continue; // 换行不出字形,但仍消费 spawn 保持对齐
+                    }
+                    glyphs.push(FrameGlyph {
+                        cluster: cluster.clone(),
+                        pos: [placed.pos[0], placed.pos[1] + top - self.scroll_offset],
+                        size: placed.size,
+                        spawn_time: *spawn,
+                    });
+                }
+            }
+            top = bottom + BLOCK_GAP;
         }
         FrameData {
             glyphs,
@@ -220,6 +322,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             part_id: part_id.to_owned(),
             pushed: 0,
             revealed: Vec::new(),
+            cache: None,
         });
         self.views.last_mut().expect("just pushed") // reason: 上面刚 push
     }
@@ -319,5 +422,68 @@ mod tests {
         eng.prime_from_snapshot(snap);
         eng.frame(16.0);
         assert_eq!(eng.sink().visible_text(), "AAA");
+    }
+
+    // 计数排版器:数 layout 被调用多少次,验证块冻结(Phase G)。
+    struct CountingLayout {
+        inner: MonospaceLayout,
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl crate::LayoutEngine for CountingLayout {
+        fn layout(&mut self, spans: &[crate::StyledSpan], w: f32) -> crate::LayoutResult {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.layout(spans, w)
+        }
+    }
+
+    #[test]
+    fn block_freeze_skips_settled_relayout() {
+        // 流式期间每帧重排尾部;吐完(settled)后再多帧不应再调 layout。
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let layout = CountingLayout {
+            inner: MonospaceLayout::default(),
+            calls: calls.clone(),
+        };
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![(0.0, delta("p", "abcdefghij"))], 16.0),
+            layout,
+            CollectSink::default(),
+            500.0,
+            800.0,
+        );
+        for _ in 0..40 {
+            eng.frame(16.0); // 吐完
+        }
+        assert_eq!(eng.sink().visible_text(), "abcdefghij");
+        let settled = calls.get();
+        for _ in 0..10 {
+            eng.frame(16.0); // 无新增 → 不应再排版
+        }
+        assert_eq!(calls.get(), settled, "已冻结块被重排了");
+    }
+
+    #[test]
+    fn viewport_culls_offscreen_blocks() {
+        // 多块 + 小视口 + 锚底 → 顶部块裁掉,底部块可见(Phase G)。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        eng.set_viewport_height(25.0); // 约一行
+        let snap = r#"[
+            {"info":{"id":"m1","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p1","messageID":"m1","text":"AAAA"}]},
+            {"info":{"id":"m2","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p2","messageID":"m2","text":"BBBB"}]},
+            {"info":{"id":"m3","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p3","messageID":"m3","text":"CCCC"}]},
+            {"info":{"id":"m4","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p4","messageID":"m4","text":"DDDD"}]},
+            {"info":{"id":"m5","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p5","messageID":"m5","text":"EEEE"}]}
+        ]"#;
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        let visible = eng.sink().visible_text();
+        assert!(visible.contains("EEEE"), "底部块应可见: {visible}");
+        assert!(!visible.contains("AAAA"), "顶部块应被裁剪: {visible}");
     }
 }
