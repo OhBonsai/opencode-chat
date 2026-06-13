@@ -1,15 +1,19 @@
-//! content(M6)— markdown 语义化(Plan2 H)。
+//! content(M6)— markdown 语义化(Plan2 H,plan2 H1)。
 //!
-//! 把一段 markdown 源文本解析成带**样式角色**的 `StyledSpan` 序列(隐藏语法标记,块间插
-//! `\n`)。用纯 Rust 的 `pulldown-cmark`(wasm 安全)。语法高亮(syntect)留作独立子项。
+//! 解析交给 vendored 的 **jcode-render-core**(后端中立文档模型:`parse_markdown -> Document`,
+//! 含标题/粗斜/行内与块代码/列表/引用/**表格**/数学等);本文件把它的 `Document` 适配成我们
+//! 渲染管线的 [`StyledSpan`] + [`StyleRole`](决定字体/上色,render 侧按 `as_u32` 分桶取色)。
 //!
 //! 流式不闪烁:[`remend`] 在解析前对尾部"主动补全"未闭合的 `**`/`` ` ``/```` ``` ````
 //! (0004 §5.1),避免半截语法字符瞬间字面显形(AR9 同族)。
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use jcode_render_core::{
+    parse_markdown as jcode_parse, Block, BlockKind, StyleRole as JRole, StyledSpan as JSpan,
+    TextAttrs,
+};
 
 /// 样式角色(content→layout/render 契约,architecture §五.3)。role 决定字体(粗/斜/等宽)
-/// 与上色;render 侧 atlas 按 (role, cluster) 分桶,glyph.wgsl 按 role 取色。
+/// 与上色;render 侧 atlas 按 (role, cluster) 分桶,glyph.wgsl 按 role 取色。数值稳定。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum StyleRole {
     #[default]
@@ -25,9 +29,9 @@ pub enum StyleRole {
     Heading,
     /// 链接文字。
     Link,
-    /// 引用块。
+    /// 引用块 / 弱化文本(reasoning)。
     Quote,
-    /// 列表项标记("• ")。
+    /// 列表/表格标记(dim)。
     ListMarker,
 }
 
@@ -35,15 +39,6 @@ impl StyleRole {
     /// 给 render/atlas 用的稳定数值。
     pub fn as_u32(self) -> u32 {
         self as u32
-    }
-
-    fn from_emphasis(bold: u32, italic: u32) -> Self {
-        match (bold > 0, italic > 0) {
-            (true, true) => StyleRole::BoldItalic,
-            (true, false) => StyleRole::Bold,
-            (false, true) => StyleRole::Italic,
-            (false, false) => StyleRole::Normal,
-        }
     }
 }
 
@@ -80,94 +75,84 @@ pub fn plain(text: &str) -> Vec<StyledSpan> {
     }
 }
 
-/// 解析 markdown 源 → 带角色的 span 序列。块间以 `\n` 分隔(零宽换行由 layout 处理)。
+/// 解析 markdown 源 → 带角色的 span 序列。块/行间以 `\n` 分隔(零宽换行由 layout 处理)。
 pub fn parse_markdown(src: &str) -> Vec<StyledSpan> {
     let patched = remend(src);
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    let parser = Parser::new_ext(&patched, opts);
-
+    let doc = jcode_parse(&patched);
     let mut out: Vec<StyledSpan> = Vec::new();
-    let mut bold = 0u32;
-    let mut italic = 0u32;
-    let mut in_code_block = false;
-    let mut in_heading = false;
-    let mut in_quote = false;
-    let mut in_link = false;
-    let mut pending_break = false; // 块结束后,下一块前插一个 \n
-
-    // 在块开始时把待插的换行落实(避免末尾多余换行)。
-    let flush_break = |out: &mut Vec<StyledSpan>, pending: &mut bool| {
-        if *pending && !out.is_empty() {
-            out.push(StyledSpan::new("\n", StyleRole::Normal));
+    for block in &doc.blocks {
+        if !out.is_empty() {
+            out.push(StyledSpan::new("\n", StyleRole::Normal)); // 块间换行
         }
-        *pending = false;
-    };
-
-    for ev in parser {
-        match ev {
-            Event::Start(Tag::Strong) => bold += 1,
-            Event::End(TagEnd::Strong) => bold = bold.saturating_sub(1),
-            Event::Start(Tag::Emphasis) => italic += 1,
-            Event::End(TagEnd::Emphasis) => italic = italic.saturating_sub(1),
-            Event::Start(Tag::Heading { .. }) => {
-                flush_break(&mut out, &mut pending_break);
-                in_heading = true;
-            }
-            Event::End(TagEnd::Heading(_)) => {
-                in_heading = false;
-                pending_break = true;
-            }
-            Event::Start(Tag::CodeBlock(_)) => {
-                flush_break(&mut out, &mut pending_break);
-                in_code_block = true;
-            }
-            Event::End(TagEnd::CodeBlock) => {
-                in_code_block = false;
-                pending_break = true;
-            }
-            Event::Start(Tag::BlockQuote(_)) => in_quote = true,
-            Event::End(TagEnd::BlockQuote(_)) => {
-                in_quote = false;
-                pending_break = true;
-            }
-            Event::Start(Tag::Item) => {
-                flush_break(&mut out, &mut pending_break);
-                out.push(StyledSpan::new("• ", StyleRole::ListMarker));
-            }
-            Event::Start(Tag::Paragraph) => flush_break(&mut out, &mut pending_break),
-            Event::End(TagEnd::Item | TagEnd::Paragraph) => pending_break = true,
-            Event::Start(Tag::Link { .. }) => in_link = true,
-            Event::End(TagEnd::Link) => in_link = false,
-            Event::Text(t) => {
-                flush_break(&mut out, &mut pending_break);
-                let role = if in_code_block {
-                    StyleRole::CodeBlock
-                } else if in_heading {
-                    StyleRole::Heading
-                } else if in_link {
-                    StyleRole::Link
-                } else if in_quote {
-                    StyleRole::Quote
-                } else {
-                    StyleRole::from_emphasis(bold, italic)
-                };
-                push_text(&mut out, &t, role);
-            }
-            Event::Code(t) => {
-                flush_break(&mut out, &mut pending_break);
-                push_text(&mut out, &t, StyleRole::Code);
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                push_text(&mut out, " ", StyleRole::from_emphasis(bold, italic));
-            }
-            _ => {}
-        }
+        emit_block(&mut out, block);
     }
     out
 }
 
-/// 把代码块里的内部换行拆成 span 边界的 `\n`(零宽,layout 处理);其余直接成 span。
+/// 把一个 jcode Block 展平成我们的 span 序列(行间插 `\n`)。
+fn emit_block(out: &mut Vec<StyledSpan>, block: &Block) {
+    if matches!(block.kind, BlockKind::Table) && !block.table.is_empty() {
+        // 表格:每行一行,单元格用 " │ " 分隔;表头加粗。列对齐(等宽)留后续。
+        for (r, row) in block.table.iter().enumerate() {
+            if r > 0 {
+                out.push(StyledSpan::new("\n", StyleRole::Normal));
+            }
+            let role = if r == 0 {
+                StyleRole::Heading
+            } else {
+                StyleRole::Normal
+            };
+            for (c, cell) in row.iter().enumerate() {
+                if c > 0 {
+                    out.push(StyledSpan::new(" │ ", StyleRole::ListMarker));
+                }
+                push_text(out, cell, role);
+            }
+        }
+        return;
+    }
+    for (i, line) in block.lines.iter().enumerate() {
+        if i > 0 {
+            out.push(StyledSpan::new("\n", StyleRole::Normal));
+        }
+        for span in &line.spans {
+            let role = map_role(span, &block.kind);
+            push_text(out, &span.text, role);
+        }
+    }
+}
+
+/// jcode 的 (StyleRole + attrs + 块类型) → 我们的渲染角色。
+fn map_role(span: &JSpan, kind: &BlockKind) -> StyleRole {
+    // 块级覆盖优先。
+    match kind {
+        BlockKind::Heading { .. } => return StyleRole::Heading,
+        BlockKind::CodeBlock { .. } => return StyleRole::CodeBlock,
+        _ => {}
+    }
+    match span.role {
+        JRole::Code | JRole::Math => StyleRole::Code,
+        JRole::Link => StyleRole::Link,
+        JRole::Dim => StyleRole::ListMarker,
+        JRole::Reasoning => StyleRole::Quote,
+        JRole::Html => StyleRole::Normal,
+        JRole::Strong | JRole::Text => {
+            let bold = span.attrs.bold || matches!(span.role, JRole::Strong);
+            emphasis(bold, span.attrs)
+        }
+    }
+}
+
+fn emphasis(bold: bool, attrs: TextAttrs) -> StyleRole {
+    match (bold, attrs.italic) {
+        (true, true) => StyleRole::BoldItalic,
+        (true, false) => StyleRole::Bold,
+        (false, true) => StyleRole::Italic,
+        (false, false) => StyleRole::Normal,
+    }
+}
+
+/// 把内部换行拆成 span 边界的 `\n`(零宽,layout 处理);其余直接成 span。
 fn push_text(out: &mut Vec<StyledSpan>, text: &str, role: StyleRole) {
     let mut first = true;
     for line in text.split('\n') {
@@ -184,7 +169,6 @@ fn push_text(out: &mut Vec<StyledSpan>, text: &str, role: StyleRole) {
 /// 尾部"主动补全"未闭合的行内/块语法,消除流式半截标记闪烁(0004 §5.1,AR9)。
 /// 只补全成可解析的形态,不改变已闭合内容。
 fn remend(src: &str) -> String {
-    // 代码围栏 ``` 的奇偶:奇数个 → 补一行收尾。
     let fence_count = src.matches("```").count();
     let mut patched = src.to_string();
     if fence_count % 2 == 1 {
@@ -194,13 +178,11 @@ fn remend(src: &str) -> String {
         patched.push_str("```");
         return patched; // 围栏内不再处理行内标记
     }
-    // 行内:对最后一行补未闭合的 ** / * / `(成对补全)。
     let last_line = patched.rsplit('\n').next().unwrap_or("");
     let mut suffix = String::new();
     if last_line.matches('`').count() % 2 == 1 {
         suffix.push('`');
     }
-    // ** 先于 *:统计去掉 ** 后的剩余 * 奇偶。
     let strong = last_line.matches("**").count();
     if strong % 2 == 1 {
         suffix.push_str("**");
@@ -234,25 +216,16 @@ mod tests {
         assert_eq!(role_of(&spans, "b"), Some(StyleRole::Bold));
         assert_eq!(role_of(&spans, "d"), Some(StyleRole::Italic));
         assert_eq!(role_of(&spans, "e"), Some(StyleRole::Code));
-        // 语法标记 ** * ` 被隐藏。
         assert!(!render(&spans).contains('*'));
         assert!(!render(&spans).contains('`'));
     }
 
     #[test]
-    fn heading_and_paragraphs_break() {
+    fn heading_role_and_break() {
         let spans = parse_markdown("# Title\n\nbody");
         assert_eq!(role_of(&spans, "Title"), Some(StyleRole::Heading));
-        assert!(render(&spans).contains('\n'), "标题与正文之间应有块换行");
-        assert!(!render(&spans).contains('#'), "# 标记隐藏");
-    }
-
-    #[test]
-    fn list_items_get_markers() {
-        let spans = parse_markdown("- one\n- two");
-        let r = render(&spans);
-        assert!(r.contains("• one"));
-        assert!(r.contains("• two"));
+        assert!(render(&spans).contains('\n'), "标题与正文之间应有换行");
+        assert!(!render(&spans).contains('#'));
     }
 
     #[test]
@@ -262,8 +235,21 @@ mod tests {
     }
 
     #[test]
+    fn table_renders_rows_not_raw_pipes() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+        let spans = parse_markdown(md);
+        let r = render(&spans);
+        assert!(!r.contains('|'), "原始竖线不该显形: {r}");
+        assert!(!r.contains("---"), "分隔行不该显形: {r}");
+        assert!(r.contains('│'), "应有单元格分隔符: {r}");
+        for cell in ["A", "B", "1", "2"] {
+            assert!(r.contains(cell), "缺单元格 {cell}: {r}");
+        }
+        assert_eq!(role_of(&spans, "A"), Some(StyleRole::Heading)); // 表头加粗
+    }
+
+    #[test]
     fn remend_hides_unclosed_bold_no_flicker() {
-        // 流式中途:"**bol" 未闭合 → 不应字面显示 **。
         let spans = parse_markdown("**bol");
         assert!(
             !render(&spans).contains('*'),

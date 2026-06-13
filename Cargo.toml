@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/core", "crates/render", "crates/wasm"]
+# vendored 第三方(jcode markdown 模型),作为 path 依赖构建,但不进 members:不套用我们的
+# 严格 lints/fmt 门禁(见 vendor/README.md 来源说明)。
+exclude = ["vendor/jcode-render-core"]
 resolver = "2"
 
 [workspace.package]

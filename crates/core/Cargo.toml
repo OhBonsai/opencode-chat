@@ -10,7 +10,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-segmentation = "1"         # grapheme 分段(smoother / native stub LayoutEngine)
-pulldown-cmark = { version = "0.12", default-features = false }  # 纯 Rust markdown,wasm 安全
+# markdown 解析用 jcode 的后端中立文档模型(plan2 H1 指定;wasm 安全,纯 pulldown-cmark+unicode-width)
+jcode-render-core = { path = "../../vendor/jcode-render-core" }
 
 [dev-dependencies]
 proptest = "1"
