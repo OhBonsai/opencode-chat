@@ -5,11 +5,14 @@
 
 use crate::content::plain;
 use crate::frame::{FrameData, FrameGlyph};
-use crate::protocol::{decode, Event};
+use crate::protocol::{decode, parse_snapshot, Event};
 use crate::seam::{Connection, LayoutEngine, RenderSink};
 use crate::smoother::Smoother;
 use crate::store::Store;
 use crate::support::graphemes;
+
+/// catch-up 字形的 spawn_time:置于"远古",着色器淡入早已完成(alpha=1),实现零动画(AR6)。
+const CATCHUP_SPAWN: f32 = -1.0e9;
 
 /// 每个可见 part 的上屏进度。
 struct PartView {
@@ -33,6 +36,8 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     views: Vec<PartView>,
     now_ms: f64,
     max_width: f32,
+    /// 只渲染该 session 的 part(`?session=`);None = 全渲染(Plan1 行为)。
+    target_session: Option<String>,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -47,7 +52,38 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             views: Vec::new(),
             now_ms: 0.0,
             max_width,
+            target_session: None,
         }
+    }
+
+    /// 设过滤目标 session(`?session=`);None 全渲染。
+    pub fn set_target_session(&mut self, session: Option<String>) {
+        self.target_session = session;
+    }
+
+    /// 用快照历史预热(Phase F catch-up):灌入 store + 直接整段上屏(零淡入,AR6)。
+    /// `raw` 为 `GET /session/{id}/message` 的响应原文。
+    pub fn prime_from_snapshot(&mut self, raw: &str) {
+        let messages = match parse_snapshot(raw) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(target: "M2", error = %e, "快照解析失败,跳过 catch-up");
+                return;
+            }
+        };
+        self.store.apply_snapshot(&messages);
+        for msg in &messages {
+            for tp in &msg.text_parts {
+                let revealed: Vec<(String, f32)> = graphemes(&tp.text)
+                    .into_iter()
+                    .map(|g| (g.to_owned(), CATCHUP_SPAWN))
+                    .collect();
+                let view = self.view_mut(&tp.part_id);
+                view.pushed = revealed.len();
+                view.revealed = revealed;
+            }
+        }
+        tracing::info!(target: "M3", n = messages.len(), "快照 catch-up 灌入");
     }
 
     /// 只读访问 store(供对账/断言,R4)。
@@ -86,10 +122,13 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             match decode(raw.raw()) {
                 Ok(Event::PartDelta {
                     part_id,
+                    message_id,
                     field,
                     delta,
                     ..
-                }) => self.store.apply_delta(&part_id, &field, &delta),
+                }) => self
+                    .store
+                    .apply_delta(&part_id, &message_id, &field, &delta),
                 Ok(Event::PartUpdated { part, .. }) => self.store.apply_part_updated(&part),
                 // 状态/心跳/握手/未知:Plan1 不改文档状态(AR12)。
                 Ok(_) => {}
@@ -136,6 +175,15 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         let mut glyphs = Vec::new();
         let mut y = 0.0f32;
         for view in &self.views {
+            // session 过滤(Phase F):目标已设且该 part 归属已知且不匹配 → 跳过;
+            // 归属未知时乐观渲染(本地单会话常态),待 updated/snapshot 解析后收敛。
+            if let Some(target) = &self.target_session {
+                if let Some(sid) = self.store.part_session(&view.part_id) {
+                    if sid != target {
+                        continue;
+                    }
+                }
+            }
             let text: String = view.revealed.iter().map(|(c, _)| c.as_str()).collect();
             if text.is_empty() {
                 continue;
@@ -227,5 +275,49 @@ mod tests {
         // 非递减(逐字上屏,后到的 spawn_time >= 先到的)。
         assert!(spawns.windows(2).all(|w| w[1] >= w[0]), "{spawns:?}");
         assert!(spawns[5] > spawns[0], "末字应晚于首字: {spawns:?}");
+    }
+
+    #[test]
+    fn snapshot_primes_instantly_without_fade() {
+        // Phase F:快照历史一帧即整段上屏,spawn_time 在远古(零淡入,AR6)。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        let snap = r#"[{"info":{"id":"m1","sessionID":"sX","role":"assistant"},
+            "parts":[{"type":"text","id":"p1","messageID":"m1","text":"历史回复"}]}]"#;
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0); // 一帧
+        assert_eq!(eng.sink().visible_text(), "历史回复");
+        let frame = eng.sink().last().expect("frame");
+        assert!(
+            frame.glyphs.iter().all(|g| g.spawn_time < 0.0),
+            "catch-up 字形 spawn_time 应在远古"
+        );
+    }
+
+    #[test]
+    fn session_filter_excludes_other_session() {
+        // Phase F:目标 sX → 只渲染 sX 的 part,sY 被排除。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        eng.set_target_session(Some("sX".into()));
+        let snap = r#"[
+            {"info":{"id":"m1","sessionID":"sX","role":"assistant"},
+             "parts":[{"type":"text","id":"p1","messageID":"m1","text":"AAA"}]},
+            {"info":{"id":"m2","sessionID":"sY","role":"assistant"},
+             "parts":[{"type":"text","id":"p2","messageID":"m2","text":"BBB"}]}
+        ]"#;
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        assert_eq!(eng.sink().visible_text(), "AAA");
     }
 }

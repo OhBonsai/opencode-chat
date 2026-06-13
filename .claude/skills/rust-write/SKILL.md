@@ -53,7 +53,7 @@ description: 写 Rust 代码 — 自动加载架构不变量 + 分层 + Rust 铁
 
 ## 4 步流程
 
-1. **读 context**:相关 decision + spec(无 spec 先要一句话需求)
+1. **读 context**:相关 decision + spec(无 spec 先要一句话需求)。**改 M1 transport / M2 protocol 必先读 `spec/knowledge/opencode.md`(接口真相,勿重推)**
 2. **选 crate/模块**:确认改 M<n>(core/render/wasm 哪个)
 3. **写代码 + 自检**:每行对照——
    - 改 store/逻辑?→ 过一遍 AR1-AR12 相关项

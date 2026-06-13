@@ -35,6 +35,7 @@ spec/
 ├── README.md                  # 本文(L0 导航)
 ├── decision/                  # L2 ADR(0000 总览 + 0001-0008 决策)
 ├── research/                  # L3 业界调研
+├── knowledge/                 # 外部接口知识(opencode API,渐进式加载真相)
 ├── plan/                      # 分阶段开发方案(plan1…)
 ├── diagnose/                  # 诊断经验沉淀 + ISSUE_INDEX
 ├── architecture.md            # L4 模块动态视图

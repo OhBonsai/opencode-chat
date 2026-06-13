@@ -25,7 +25,9 @@ mod support;
 pub use app::Engine;
 pub use content::{plain, StyledSpan};
 pub use frame::{FrameData, FrameGlyph};
-pub use protocol::{decode, Envelope, Event, Part, ProtocolError};
+pub use protocol::{
+    decode, parse_snapshot, Envelope, Event, Part, ProtocolError, SnapshotMessage, TextPartData,
+};
 pub use record::{Player, Record, Recorder};
 pub use seam::{Clock, Connection, LayoutEngine, LayoutResult, PlacedGlyph, RawEvent, RenderSink};
 pub use smoother::{Revealed, Smoother};

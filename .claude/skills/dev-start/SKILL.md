@@ -29,6 +29,7 @@ git status --porcelain
 - B.1 必问 1 句(用户已说清则跳过):"你这次要干什么?一句话。"
 - B.2 **域定位**:读 AGENTS.md § 4 域速查(13 模块 M1-M13),确定落在哪个模块。
   只读所涉 1-2 模块对应的 decision/architecture 章节,不整读。
+- B.2.1 **接口知识**:若域命中 M1 transport / M2 protocol / 联调脚本 → 先读 `spec/knowledge/opencode.md`(opencode API 真相,勿重推;Tier 1)。
 - B.2.5 **历史诊断扫描**(0 成本不阻断):`grep -i -B1 -A2 "<关键词>" spec/diagnose/ISSUE_INDEX.md`,命中则提示先看对应诊断的「踩坑要点」。
 - B.3 **分支名**:`<type>/M<n>-<module>/<name>_<MMDD>`
   type ∈ feat/fix/refactor/chore/docs/ci;module 用模块名;name kebab-case <30 字符。

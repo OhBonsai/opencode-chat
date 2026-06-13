@@ -23,7 +23,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::clock::WebClock;
 use crate::layout_bridge::PretextLayout;
-use crate::transport::SseConnection;
+use crate::transport::{fetch_snapshot, SseConnection};
 
 type AppEngine = Engine<Box<dyn Connection>, PretextLayout, GpuSink>;
 type SharedState = Rc<RefCell<Option<AppState>>>;
@@ -68,7 +68,6 @@ pub struct ChatCanvas {
     layout_fn: js_sys::Function,
     rasterize_fn: js_sys::Function,
     server_url: Option<String>,
-    #[allow(dead_code)] // reason: Plan2 用于会话过滤/快照拉取
     session_id: Option<String>,
     state: SharedState,
     raf: RafHandle,
@@ -103,11 +102,20 @@ impl ChatCanvas {
         let layout_fn = self.layout_fn.clone();
         let rasterize_fn = self.rasterize_fn.clone();
         let server_url = self.server_url.clone();
+        let session_id = self.session_id.clone();
         let state = self.state.clone();
         let raf = self.raf.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) =
-                init_and_run(canvas, layout_fn, rasterize_fn, server_url, state, raf).await
+            if let Err(e) = init_and_run(
+                canvas,
+                layout_fn,
+                rasterize_fn,
+                server_url,
+                session_id,
+                state,
+                raf,
+            )
+            .await
             {
                 tracing::error!(target: "M13", "启动失败: {e}");
             }
@@ -120,6 +128,7 @@ async fn init_and_run(
     layout_fn: js_sys::Function,
     rasterize_fn: js_sys::Function,
     server_url: Option<String>,
+    session_id: Option<String>,
     state: SharedState,
     raf: RafHandle,
 ) -> Result<(), String> {
@@ -137,6 +146,14 @@ async fn init_and_run(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Phase F:先拉快照(SSE 连接之前取的时间点),再连 SSE。这样 SSE 缓冲的事件都在
+    // 快照点之后 → catch-up 与 live 不重叠(避免双重追加)。0003 §4 的 buffer-first 严格
+    // 时序留到 Phase J。
+    let snapshot_raw = match (&server_url, &session_id) {
+        (Some(url), Some(sid)) => fetch_snapshot(url, sid).await,
+        _ => None,
+    };
+
     let conn: Box<dyn Connection> = match &server_url {
         Some(url) => Box::new(SseConnection::connect(url)?),
         None => Box::new(synthetic()),
@@ -147,7 +164,13 @@ async fn init_and_run(
         rasterize_fn,
         profile: EffectProfile::Full,
     };
-    let engine = Engine::new(conn, layout, sink, 200.0, width as f32);
+    let mut engine = Engine::new(conn, layout, sink, 200.0, width as f32);
+    if let Some(sid) = session_id {
+        engine.set_target_session(Some(sid));
+    }
+    if let Some(raw) = snapshot_raw {
+        engine.prime_from_snapshot(&raw);
+    }
     *state.borrow_mut() = Some(AppState { engine });
 
     // requestAnimationFrame 帧循环:dt 由 performance.now 差分得出(R8)。

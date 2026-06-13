@@ -72,6 +72,20 @@ server 的事件流,在 GPU 画布上做流式、高动效的对话渲染;交付
 **前端 harness**:`web/`
 跨域决策 → `spec/decision/`(全局编号,不分子目录)。
 
+### 4.1 外部接口知识(渐进式加载,避免每次重查)
+
+opencode 的 HTTP/SSE 接口知识沉淀在 **[spec/knowledge/opencode.md](./spec/knowledge/opencode.md)**——
+**动 M1 transport / M2 protocol / 联调脚本前必读它,不要每次去翻 opencode 源码重推**。
+
+Tier 0 常驻最小面(够起步,细节进 Tier 1):
+- 建会话 `POST /session` → `{id}`;发消息 `POST /session/{id}/message`(同步返回 `{info,parts}`);
+  事件流 `GET /event`(SSE);快照 `GET /session/{id}/message`(Plan2 catch-up)。
+- 热路径事件只有两个:`message.part.delta`(增量)+ `message.part.updated`(全量对账)。
+- **路径前缀有 `/api` 与无前缀两套,本机走无前缀**;delta **实测不带 sessionID**(用 `#[serde(default)]`)。
+
+知识分三层:Tier 0(本节常驻)→ Tier 1(`spec/knowledge/opencode.md`,改 M1/M2 必读)→
+Tier 2(opencode 源仓库,仅版本漂移时回源,且**回填 Tier 1**)。刷新方法见该文 §7。
+
 ## 5. Skill 间共享上下文 · `DEVMEM.md`
 
 仓库根 `DEVMEM.md`(**已 gitignored**)是 skill 间本地 scratchpad:

@@ -16,7 +16,7 @@ wasm-bindgen = "=0.2.100"          # ★锁定;wasm-pack/CLI 必须同版本
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = "0.3"
-gloo-net = { version = "0.6", features = ["eventsource"] }
+gloo-net = { version = "0.6", features = ["eventsource", "http"] }
 tracing-wasm = "0.2"
 console_error_panic_hook = "0.1"
 wgpu = "25"                        # ★用前确认最新稳定版,WebGPU+WebGL2 后端

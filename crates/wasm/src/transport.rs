@@ -9,8 +9,30 @@ use std::rc::Rc;
 
 use futures::StreamExt;
 use gloo_net::eventsource::futures::EventSource;
+use gloo_net::http::Request;
 use opencode_chat_core::{Connection, RawEvent};
 use wasm_bindgen_futures::spawn_local;
+
+/// 拉某 session 的历史快照原文(`GET {base}/session/{id}/message`,Phase F catch-up)。
+/// 失败返回 `None`(降级为纯 live)。
+pub(crate) async fn fetch_snapshot(base: &str, session_id: &str) -> Option<String> {
+    let base = base.trim_end_matches('/');
+    let url = format!("{base}/session/{session_id}/message");
+    match Request::get(&url).send().await {
+        Ok(resp) if resp.ok() => {
+            tracing::info!(target: "M1", "快照已拉取: {url}");
+            resp.text().await.ok()
+        }
+        Ok(resp) => {
+            tracing::warn!(target: "M1", "快照 HTTP {} @ {url}", resp.status());
+            None
+        }
+        Err(e) => {
+            tracing::warn!(target: "M1", "快照请求失败: {e:?}");
+            None
+        }
+    }
+}
 
 pub(crate) struct SseConnection {
     queue: Rc<RefCell<VecDeque<String>>>,
