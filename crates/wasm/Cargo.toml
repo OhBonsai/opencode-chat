@@ -1,0 +1,41 @@
+[package]
+name = "opencode-chat-wasm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# wasm-pack 自带的 wasm-opt 太旧,不识别 rustc 新发的 bulk-memory / nontrapping-fptoint
+# 等特性。Plan1 关掉这步可选优化(release profile 已 LTO + opt-level=z);Plan2 换用系统
+# 新版 wasm-opt 再开。
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+
+[dependencies]
+opencode-chat-core = { path = "../core" }
+opencode-chat-render = { path = "../render" }
+tracing.workspace = true
+
+# 平台依赖仅 wasm 目标编译;native `cargo build --workspace` 跳过(本 crate 是平台胶水)。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = [
+    "Window", "Document", "Element", "EventTarget", "HtmlCanvasElement",
+    "Performance", "EventSource", "MessageEvent",
+] }
+gloo-net.workspace = true
+futures = "0.3"
+tracing-wasm.workspace = true
+console_error_panic_hook.workspace = true
+# 从 canvas 建 wgpu surface 需要 wgpu(render crate 不碰 web-sys,胶水在此)。
+wgpu.workspace = true
+
+[lints]
+workspace = true

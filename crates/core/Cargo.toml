@@ -1,0 +1,19 @@
+[package]
+name = "opencode-chat-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+unicode-segmentation = "1"         # grapheme 分段(smoother / native stub LayoutEngine)
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+
+[lints]
+workspace = true

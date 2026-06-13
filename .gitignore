@@ -1,0 +1,57 @@
+# ───────────── AI scratchpad（含敏感信息，绝不提交）─────────────
+DEVMEM.md
+.claude/skills/_probe/
+
+# ───────────── Rust ─────────────
+/target
+**/target
+*.rs.bk
+# 库项目通常提交 Cargo.lock；本项目交付 wasm 组件，保留以锁定可复现构建
+# 若改为纯库再决定是否忽略 Cargo.lock
+
+# ───────────── wasm 构建产物 ─────────────
+web/pkg/
+crates/wasm/pkg/
+*.wasm
+!**/fixtures/**/*.wasm   # 测试夹具里的 wasm 不忽略
+
+# ───────────── 前端 / Node（web/ harness）─────────────
+node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ───────────── 测试 / 基准产物 ─────────────
+/coverage/
+**/snapshots/*.actual.png       # 视觉快照的实际输出（失败时生成），golden 保留
+criterion/
+flamegraph.svg
+perf.data*
+
+# ───────────── 录像（按需）─────────────
+# spec/diagnose/replays/ 下的诊断录像随诊断文档提交，不忽略
+# 临时本地录像放 /tmp 或这里：
+*.local.jsonl
+
+# ───────────── 编辑器 / IDE ─────────────
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+*.swp
+*~
+
+# ───────────── 操作系统 ─────────────
+.DS_Store
+Thumbs.db
+
+# ───────────── 杂项 ─────────────
+*.log
+.env
+.env.*
+!.env.example
+pretext
+infinite-canvas-tutorial

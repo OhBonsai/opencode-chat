@@ -1,0 +1,52 @@
+[workspace]
+members = ["crates/core", "crates/render", "crates/wasm"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+# 平台相关(仅 wasm/render crate 用)
+wasm-bindgen = "=0.2.100"          # ★锁定;wasm-pack/CLI 必须同版本
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+gloo-net = { version = "0.6", features = ["eventsource"] }
+tracing-wasm = "0.2"
+console_error_panic_hook = "0.1"
+wgpu = "25"                        # ★用前确认最新稳定版,WebGPU+WebGL2 后端
+bytemuck = { version = "1", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"               # render/wasm 局部确需可 #[allow(unsafe_code)] 并注释(deny 可被局部 allow,forbid 不可)
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+# 渲染/排版本质是 px 坐标在 usize/f32/f64 间换算,精度/截断转换不可避免;
+# 文档为中文夹标识符,doc_markdown 误报多。以下 allow 保 `clippy -D warnings` 可过。
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+many_single_char_names = "allow"   # x/y/w/h 是图形坐标惯例
+too_many_lines = "allow"           # wgpu 管线初始化天然冗长
+unwrap_used = "warn"
+panic = "warn"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
