@@ -142,6 +142,54 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         tracing::info!(target: "M3", n = messages.len(), "快照 catch-up 灌入");
     }
 
+    /// 重连/周期性对账(Phase J):只补 store 里**还没有的 part**(恢复连接间隙错过的历史),
+    /// 不动正在 live 的块,避免闪烁/回退(0003 §3.4)。已知 part 的差异交由 `part.updated`
+    /// 对账(AR4)。
+    pub fn resync_from_snapshot(&mut self, raw: &str) {
+        let messages = match parse_snapshot(raw) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(target: "M2", error = %e, "resync 快照解析失败");
+                return;
+            }
+        };
+        // 过滤出 store 未知的 part。
+        let fresh: Vec<crate::protocol::SnapshotMessage> = messages
+            .into_iter()
+            .filter_map(|m| {
+                let new_parts: Vec<_> = m
+                    .text_parts
+                    .into_iter()
+                    .filter(|tp| self.store.part_text(&tp.part_id).is_none())
+                    .collect();
+                if new_parts.is_empty() {
+                    None
+                } else {
+                    Some(crate::protocol::SnapshotMessage {
+                        text_parts: new_parts,
+                        ..m
+                    })
+                }
+            })
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        self.store.apply_snapshot(&fresh);
+        for msg in &fresh {
+            for tp in &msg.text_parts {
+                let revealed: Vec<(String, f32)> = graphemes(&tp.text)
+                    .into_iter()
+                    .map(|g| (g.to_owned(), CATCHUP_SPAWN))
+                    .collect();
+                let view = self.view_mut(&tp.part_id);
+                view.pushed = revealed.len();
+                view.revealed = revealed;
+            }
+        }
+        tracing::info!(target: "M3", n = fresh.len(), "resync 补入错过的历史");
+    }
+
     /// 只读访问 store(供对账/断言,R4)。
     pub fn store(&self) -> &Store {
         &self.store
@@ -550,5 +598,39 @@ mod tests {
             eng.frame(8_000.0); // 推进 ~48s,无新事件
         }
         assert_eq!(eng.turn_status(), crate::TurnStatus::Settled);
+    }
+
+    #[test]
+    fn resync_adds_missed_history_without_disturbing_live() {
+        // Phase J:p1 正在 live;resync 补入错过的历史 p0,但不重置 live 的 p1。
+        let player = Player::from_pairs(vec![(0.0, delta("p1", "live"))], 16.0);
+        let mut eng = Engine::new(
+            player,
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            500.0,
+            800.0,
+        );
+        for _ in 0..10 {
+            eng.frame(16.0);
+        }
+        assert_eq!(eng.store().part_text("p1"), Some("live"));
+        // resync:含错过的 p0 + 已知的 p1(快照里 p1 更长,但应被跳过不动 live)。
+        let snap = r#"[
+            {"info":{"id":"m0","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p0","messageID":"m0","text":"missed"}]},
+            {"info":{"id":"m1","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p1","messageID":"m1","text":"liveXXXX"}]}
+        ]"#;
+        eng.resync_from_snapshot(snap);
+        eng.frame(16.0);
+        assert_eq!(
+            eng.store().part_text("p0"),
+            Some("missed"),
+            "应补入错过历史"
+        );
+        assert_eq!(
+            eng.store().part_text("p1"),
+            Some("live"),
+            "live 块不应被 resync 覆盖"
+        );
     }
 }

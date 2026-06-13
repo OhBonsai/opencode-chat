@@ -29,6 +29,9 @@ type AppEngine = Engine<Box<dyn Connection>, PretextLayout, GpuSink>;
 type SharedState = Rc<RefCell<Option<AppState>>>;
 type RafHandle = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
+/// 周期性对账间隔(ms,Phase J)。
+const RESYNC_MS: f64 = 20_000.0;
+
 /// 渲染汇:把 core 的语义字形按需光栅化进图集,再交后端绘制。
 struct GpuSink {
     backend: WebGpuBackend,
@@ -166,6 +169,10 @@ async fn init_and_run(
         rasterize_fn,
         profile: EffectProfile::Full,
     };
+    // 留给周期性 resync(Phase J)用:server+session。
+    let resync_server = server_url.clone();
+    let resync_session = session_id.clone();
+
     let mut engine = Engine::new(conn, layout, sink, 200.0, width as f32);
     engine.set_viewport_height(height as f32);
     if let Some(sid) = session_id {
@@ -179,14 +186,32 @@ async fn init_and_run(
     // requestAnimationFrame 帧循环:dt 由 performance.now 差分得出(R8)。
     let clock = WebClock::new().ok_or("无 performance.now")?;
     let last = Rc::new(RefCell::new(clock.now_ms()));
+    let since_resync = Rc::new(RefCell::new(0.0f64));
     let inner = state.clone();
     let next = raf.clone();
+    let resync_state = state.clone();
     *raf.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         let now = clock.now_ms();
         let dt = (now - *last.borrow()).max(0.0);
         *last.borrow_mut() = now;
         if let Some(app) = inner.borrow_mut().as_mut() {
             app.engine.frame(dt);
+        }
+        // 周期性对账(Phase J):每 RESYNC_MS 拉一次快照补错过的历史(配合 EventSource 自动
+        // 重连,覆盖弱网/僵尸连接下的丢失,不动 live 块)。
+        *since_resync.borrow_mut() += dt;
+        if *since_resync.borrow() >= RESYNC_MS {
+            *since_resync.borrow_mut() = 0.0;
+            if let (Some(server), Some(sid)) = (resync_server.clone(), resync_session.clone()) {
+                let st = resync_state.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Some(raw) = fetch_snapshot(&server, &sid).await {
+                        if let Some(app) = st.borrow_mut().as_mut() {
+                            app.engine.resync_from_snapshot(&raw);
+                        }
+                    }
+                });
+            }
         }
         if let Some(cb) = next.borrow().as_ref() {
             request_animation_frame(cb);

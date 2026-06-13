@@ -210,6 +210,42 @@ mod tests {
         assert_eq!(s.part_session("p9"), Some("sX"));
     }
 
+    fn snap(part: &str, mid: &str, text: &str) -> SnapshotMessage {
+        SnapshotMessage {
+            session_id: "s".into(),
+            message_id: mid.into(),
+            role: "a".into(),
+            text_parts: vec![TextPartData {
+                part_id: part.into(),
+                text: text.into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn final_state_converges_to_snapshot_under_faults() {
+        // Phase J/AR4 总不变量:乱序 + 重复 + 丢失的 delta,经快照对账后收敛到权威态。
+        let mut s = Store::new();
+        s.apply_delta("p1", "m1", "text", "Hel");
+        s.apply_delta("p2", "m2", "text", "wor");
+        s.apply_delta("p1", "m1", "text", "Hel"); // 重复
+        s.apply_delta("p2", "m2", "text", "ld");
+        s.apply_snapshot(&[snap("p1", "m1", "Hello"), snap("p2", "m2", "world")]);
+        assert_eq!(s.part_text("p1"), Some("Hello"));
+        assert_eq!(s.part_text("p2"), Some("world"));
+    }
+
+    #[test]
+    fn snapshot_apply_is_idempotent() {
+        let msgs = [snap("p1", "m1", "abc")];
+        let mut a = Store::new();
+        a.apply_snapshot(&msgs);
+        let mut b = Store::new();
+        b.apply_snapshot(&msgs);
+        b.apply_snapshot(&msgs); // 再来一次(重连重放)
+        assert_eq!(a.snapshot(), b.snapshot());
+    }
+
     use proptest::prelude::*;
 
     proptest! {
