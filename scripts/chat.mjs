@@ -27,7 +27,7 @@ const port = process.env.PORT ?? "4096";
 const server = (process.env.SERVER ?? `http://localhost:${port}`).replace(/\/$/, "");
 const webPort = process.env.WEB_PORT ?? "5173";
 
-const modelStr = process.env.MODEL ?? "aliyuntokenplan/deepseek-v4-pro";
+const modelStr = process.env.MODEL ?? "aliyuntokenplan/qwen3.7-max";
 const slash = modelStr.indexOf("/");
 const model = { providerID: modelStr.slice(0, slash), modelID: modelStr.slice(slash + 1) };
 
