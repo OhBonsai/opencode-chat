@@ -47,9 +47,41 @@ struct StatsSnapshot {
     atlas_cap: usize,
     atlas_evict: u64,
     cam_zoom: f32,
+    /// 逐源计数 `[bitmap, tinysdf, msdf, rgba]`(0015:MSDF 命中率)。
+    src_counts: [u32; 4],
 }
 type StatsCell = Rc<RefCell<StatsSnapshot>>;
 type Flag = Rc<RefCell<bool>>;
+
+/// 字形渲染方案(0015 §2.6 调试器全局切)。数值与 JS 端 `GlyphMode` 一致。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlyphMode {
+    /// MSDF 命中 → MSDF,否则回退 TinySDF(默认)。
+    Auto = 0,
+    /// 全部走 Canvas 位图覆盖率(轴 A 的另一套方案)。
+    Bitmap = 1,
+    /// 禁 MSDF,全部 TinySDF(验回退)。
+    ForceTinySdf = 2,
+    /// 强制 MSDF(看烘集覆盖空洞;未命中仍只能回退 TinySDF)。
+    ForceMsdf = 3,
+}
+
+impl GlyphMode {
+    fn from_u32(v: u32) -> Self {
+        match v {
+            1 => Self::Bitmap,
+            2 => Self::ForceTinySdf,
+            3 => Self::ForceMsdf,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// 字形源 kind(并入 atlas key + GpuInstance.kind;与 glyph.wgsl 分支一致)。
+const KIND_BITMAP: u32 = 0;
+const KIND_TINYSDF: u32 = 1;
+#[allow(dead_code)] // reason: Phase 2 MSDF 源接入后使用
+const KIND_MSDF: u32 = 2;
 
 /// 渲染汇:把 core 的语义字形按需光栅化进图集,再交后端绘制。
 struct GpuSink {
@@ -58,6 +90,10 @@ struct GpuSink {
     profile: EffectProfile,
     /// 字体代:并入 atlas key,换字体时 +1 → 旧字形 key 失配、重栅,老 tile 走 LRU 自然淘汰。
     font_gen: u32,
+    /// 字形渲染方案(调试器切)。
+    glyph_mode: GlyphMode,
+    /// 本帧逐源计数 `[bitmap, tinysdf, msdf, rgba]`(可观测:MSDF 命中率)。
+    src_counts: [u32; 4],
 }
 
 impl GpuSink {
@@ -74,27 +110,51 @@ impl GpuSink {
     fn bump_font_gen(&mut self) {
         self.font_gen = self.font_gen.wrapping_add(1);
     }
+
+    /// 切换字形渲染方案(0015 §2.6)。
+    fn set_glyph_mode(&mut self, mode: GlyphMode) {
+        self.glyph_mode = mode;
+    }
+
+    /// 本帧逐源计数 `[bitmap, tinysdf, msdf, rgba]`。
+    fn source_counts(&self) -> [u32; 4] {
+        self.src_counts
+    }
+
+    /// 解析某字形的源 kind(0015 §2.2)。Phase 1:Bitmap 模式 → 位图;其余 → TinySDF
+    /// (MSDF 源 Phase 2 接入,届时 Auto/ForceMSDF 命中烘集走 MSDF)。
+    fn resolve_kind(&self, _cluster: &str) -> u32 {
+        match self.glyph_mode {
+            GlyphMode::Bitmap => KIND_BITMAP,
+            _ => KIND_TINYSDF,
+        }
+    }
 }
 
 impl RenderSink for GpuSink {
     fn submit(&mut self, frame: &FrameData) {
         self.backend.atlas_begin_frame();
+        self.src_counts = [0; 4];
         let mut instances = Vec::with_capacity(frame.glyphs.len());
         for g in &frame.glyphs {
-            // atlas 按 (font_gen, style, cluster) 分桶:粗/斜/code 是不同 SDF tile;font_gen 让换字体
-            // 后 key 失配触发重栅(render 与此处同 key)。
+            // 源解析(0015):决定该字走位图/TinySDF/MSDF。
+            let kind = self.resolve_kind(&g.cluster);
+            self.src_counts[kind as usize] += 1;
+            // atlas 按 (font_gen, kind, style, cluster) 分桶:粗/斜/code 与不同源是不同 tile;
+            // font_gen/kind 变化让 key 失配触发重栅(render 与此处同 key)。
             let key = format!(
-                "{}\u{1}{}",
+                "{}\u{1}{}\u{1}{}",
                 self.font_gen,
+                kind,
                 infinite_chat_render::glyph_key(g.style, &g.cluster)
             );
             self.backend.atlas_pin(&key);
             let a = self.backend.atlas_alloc(&key);
             if a.is_new {
-                if let Some(sdf) =
-                    glyph_bridge::rasterize_sdf(&self.rasterize_fn, &g.cluster, g.style)
+                if let Some(tile) =
+                    glyph_bridge::rasterize(&self.rasterize_fn, &g.cluster, g.style, kind)
                 {
-                    self.backend.atlas_upload(a.slot, &sdf);
+                    self.backend.atlas_upload(a.slot, &tile);
                 }
             }
             instances.push(infinite_chat_render::GpuInstance {
@@ -104,6 +164,7 @@ impl RenderSink for GpuSink {
                 spawn_time: g.spawn_time,
                 style: g.style,
                 layer: a.slot.page,
+                kind,
             });
         }
         // 装饰/调试矩形(Plan 4B):core 已算好世界坐标,直接平铺为 instance。
@@ -196,7 +257,21 @@ impl ChatCanvas {
         set("atlasEvict", s.atlas_evict as f64);
         set("camZoom", f64::from(s.cam_zoom));
         set("paused", f64::from(u8::from(*self.paused.borrow())));
+        set("srcBitmap", f64::from(s.src_counts[0]));
+        set("srcTinySdf", f64::from(s.src_counts[1]));
+        set("srcMsdf", f64::from(s.src_counts[2]));
+        set("srcRgba", f64::from(s.src_counts[3]));
         obj.into()
+    }
+
+    /// 切换字形渲染方案(0015 §2.6):0=Auto / 1=Bitmap / 2=ForceTinySDF / 3=ForceMSDF。
+    /// 仅改源(key 含 kind → 重栅),advance 不变故无需重排。
+    pub fn set_glyph_mode(&self, mode: u32) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine
+                .sink_mut()
+                .set_glyph_mode(GlyphMode::from_u32(mode));
+        }
     }
 
     /// 暂停 / 恢复帧推进(渲染冻结在最后一帧,Plan 4C2)。
@@ -303,6 +378,8 @@ async fn init_and_run(
         rasterize_fn,
         profile: EffectProfile::Full,
         font_gen: 0,
+        glyph_mode: GlyphMode::Auto,
+        src_counts: [0; 4],
     };
     // 留给周期性 resync(Phase J)用:server+session。
     let resync_server = server_url.clone();
@@ -374,6 +451,7 @@ async fn init_and_run(
                     atlas_cap: cap,
                     atlas_evict: evict,
                     cam_zoom: app.engine.camera().zoom(),
+                    src_counts: app.engine.sink().source_counts(),
                 };
                 if debug {
                     tracing::info!(target: "perf",

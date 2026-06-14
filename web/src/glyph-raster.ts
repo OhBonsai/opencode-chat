@@ -59,7 +59,8 @@ function edt(grid: Float64Array, w: number, h: number): void {
   for (let y = 0; y < h; y++) edt1d(grid, y * w, 1, w); // 行
 }
 
-export function rasterize(cluster: string, style: number): Uint8Array {
+// kind:0=位图覆盖率(直接 alpha,1× 锐、不缩放)/ 1=TinySDF(EDT 距离场)。0015 §2.1 轴 A。
+export function rasterize(cluster: string, style: number, kind = 1): Uint8Array {
   const c = ctx();
   c.clearRect(0, 0, TILE, TILE);
   // 字号让字形落进 [BUFFER, TILE-BUFFER]。
@@ -71,6 +72,14 @@ export function rasterize(cluster: string, style: number): Uint8Array {
 
   const img = c.getImageData(0, 0, TILE, TILE).data; // RGBA;取 alpha
   const n = TILE * TILE;
+
+  // 位图模式:覆盖率 = alpha 直出(无 EDT),片元直采 r。
+  if (kind === 0) {
+    const cov = new Uint8Array(n);
+    for (let i = 0; i < n; i++) cov[i] = img[i * 4 + 3];
+    return cov;
+  }
+
   const outer = new Float64Array(n);
   const inner = new Float64Array(n);
   for (let i = 0; i < n; i++) {

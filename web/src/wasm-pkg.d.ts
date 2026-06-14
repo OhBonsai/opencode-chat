@@ -6,7 +6,7 @@ declare module "*infinite_chat_wasm.js" {
 
   export interface ChatCanvasConfig {
     layout: (runTexts: string[], runRoles: Uint32Array, maxWidth: number) => Float32Array;
-    rasterize: (cluster: string, style: number) => Uint8Array;
+    rasterize: (cluster: string, style: number, kind: number) => Uint8Array;
     serverUrl?: string;
     sessionId?: string;
   }
@@ -25,6 +25,10 @@ declare module "*infinite_chat_wasm.js" {
     atlasEvict: number;
     camZoom: number;
     paused: number;
+    srcBitmap: number;
+    srcTinySdf: number;
+    srcMsdf: number;
+    srcRgba: number;
   }
 
   export class ChatCanvas {
@@ -35,5 +39,6 @@ declare module "*infinite_chat_wasm.js" {
     step(): void;
     set_debug_geometry(on: boolean): void;
     refresh_fonts(): void;
+    set_glyph_mode(mode: number): void;
   }
 }

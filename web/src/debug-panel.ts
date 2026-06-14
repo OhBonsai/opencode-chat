@@ -21,7 +21,14 @@ interface ChatStats {
   atlasEvict: number;
   camZoom: number;
   paused: number;
+  srcBitmap: number;
+  srcTinySdf: number;
+  srcMsdf: number;
+  srcRgba: number;
 }
+
+// 字形渲染方案(与 wasm GlyphMode / 0015 §2.6 一致)。
+const GLYPH_MODES = ["auto", "bitmap", "tinysdf", "msdf"] as const;
 
 export function mountDebugPanel(chat: ChatCanvas): void {
   const panel = document.createElement("div");
@@ -88,7 +95,18 @@ export function mountDebugPanel(chat: ChatCanvas): void {
   });
   fontBar.append(fontBtn);
 
-  panel.append(header("debug"), spark, body, bar, geoBar, fontBar);
+  // 字形源方案切换(auto / bitmap / tinysdf / msdf,0015 §2.6)。
+  const glyphBar = document.createElement("div");
+  glyphBar.style.cssText = "display:flex;margin-top:6px";
+  let glyphMode = 0;
+  const glyphBtn = btn(`◐ glyph: ${GLYPH_MODES[glyphMode]}`, () => {
+    glyphMode = (glyphMode + 1) % GLYPH_MODES.length;
+    chat.set_glyph_mode(glyphMode);
+    glyphBtn.textContent = `◐ glyph: ${GLYPH_MODES[glyphMode]}`;
+  });
+  glyphBar.append(glyphBtn);
+
+  panel.append(header("debug"), spark, body, bar, geoBar, fontBar, glyphBar);
   document.body.appendChild(panel);
 
   const fpsHist: number[] = [];
@@ -109,6 +127,7 @@ export function mountDebugPanel(chat: ChatCanvas): void {
       row("blocks", `${fmt(s.blocksVisible)} / ${fmt(s.blocksTotal)}`),
       row("atlas", `${fmt(s.atlasUsed)} / ${fmt(s.atlasCap)}`, thrash ? "#f38ba8" : undefined),
       row("evict", fmt(s.atlasEvict)),
+      row("src B/T/M", `${fmt(s.srcBitmap)} / ${fmt(s.srcTinySdf)} / ${fmt(s.srcMsdf)}`),
       row("zoom", `${fmt(s.camZoom, 2)}×`),
       thrash ? `<div style="color:#f38ba8;margin-top:3px">⚠ atlas thrash</div>` : "",
     ].join("");

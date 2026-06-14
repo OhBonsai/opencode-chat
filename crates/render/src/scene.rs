@@ -22,18 +22,21 @@ pub struct GpuInstance {
     pub style: u32,
     /// atlas 页(纹理数组层)。
     pub layer: u32,
+    /// 字形源(0011 §3.5 / 0015):0=位图覆盖率 / 1=TinySDF / 2=MSDF / 3=RGBA。片元按此分支采样。
+    pub kind: u32,
 }
 
 impl GpuInstance {
     /// 顶点缓冲布局(step mode = Instance)。
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+        const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
             0 => Float32x2, // pos
             1 => Float32x2, // size
             2 => Float32x4, // uv
             3 => Float32,   // spawn_time
             4 => Uint32,    // style
             5 => Uint32,    // layer
+            6 => Uint32,    // kind
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GpuInstance>() as wgpu::BufferAddress,

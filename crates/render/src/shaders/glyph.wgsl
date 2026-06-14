@@ -24,6 +24,7 @@ struct InstanceIn {
     @location(3) spawn_time: f32,
     @location(4) style: u32,           // StyleRole
     @location(5) layer: u32,           // atlas 页(纹理数组层)
+    @location(6) kind: u32,            // 字形源:0=位图覆盖率 1=TinySDF 2=MSDF 3=RGBA
 };
 
 struct VsOut {
@@ -32,6 +33,7 @@ struct VsOut {
     @location(1) alpha: f32,
     @location(2) tint: vec3<f32>,
     @location(3) @interpolate(flat) layer: u32,
+    @location(4) @interpolate(flat) kind: u32,
 };
 
 fn style_color(s: u32) -> vec3<f32> {
@@ -69,18 +71,35 @@ fn vs_main(@builtin(vertex_index) vid: u32, inst: InstanceIn) -> VsOut {
     out.alpha = select(clamp(age / max(globals.fade_ms, 1.0), 0.0, 1.0), 1.0, globals.fade_ms <= 0.0);
     out.tint = style_color(inst.style);
     out.layer = inst.layer;
+    out.kind = inst.kind;
     return out;
+}
+
+// 单通道距离场覆盖率(TinySDF):smoothstep + fwidth 屏幕空间梯度 → 任意缩放锐利。
+// ③ 阈值下移到 0.46:浅字深底会"视觉变细",下移加粗找回字重。
+// ② AA 带收窄到 0.6×fwidth:整 fwidth 当半宽约 2px 过渡偏软,收窄更锐。
+fn sdf_coverage(d: f32) -> f32 {
+    let aa = max(fwidth(d), 0.0001);
+    return smoothstep(0.46 - 0.6 * aa, 0.46 + 0.6 * aa, d);
+}
+
+fn median3(c: vec3<f32>) -> f32 {
+    return max(min(c.r, c.g), min(max(c.r, c.g), c.b));
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // 距离场覆盖率;fwidth 给屏幕空间梯度 → 任意缩放锐利。
-    let d = textureSample(atlas_tex, atlas_samp, in.uv, i32(in.layer)).r;
-    let aa = max(fwidth(d), 0.0001);
-    // ③ 阈值下移到 0.46(0.5→0.46):浅字深底会"视觉变细",下移加粗找回字重。
-    // ② AA 带收窄到 0.6×fwidth:整 fwidth 当半宽约 2px 过渡偏软,收窄更锐。
-    let edge = 0.46;
-    let band = 0.6 * aa;
-    let cov = smoothstep(edge - band, edge + band, d);
+    let tex = textureSample(atlas_tex, atlas_samp, in.uv, i32(in.layer));
+    var cov: f32;
+    switch in.kind {
+        // 0=位图覆盖率:R8 存的就是 alpha 覆盖率,直采(1× 锐、不缩放)。
+        case 0u: { cov = tex.r; }
+        // 2=MSDF:median(r,g,b) 还原距离场再 smoothstep(拐角锐;baked RGB 页)。
+        case 2u: { cov = sdf_coverage(median3(tex.rgb)); }
+        // 3=RGBA 彩字(emoji):直接输出,不上色。
+        case 3u: { return tex * in.alpha; }
+        // 1=TinySDF(默认):单通道距离场。
+        default: { cov = sdf_coverage(tex.r); }
+    }
     return vec4<f32>(in.tint, cov * in.alpha);
 }
