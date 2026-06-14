@@ -4,13 +4,12 @@
 // Felzenszwalb 1D)→ R8 单通道距离场。0.5≈字形边缘(与 glyph.wgsl 的 smoothstep 对齐)。
 // 固定 TILE 尺寸(SDF 缩放无关);返回长度 = TILE*TILE 的 Uint8Array。
 //
-// 已知近似(本期):字形画进方形 tile,窄字按比例 quad 采样整 tile → 轻微水平压缩;
-// 精确 per-glyph tile bbox / MSDF 拐角留后续(0011 §6 触发条件)。
+// 字形画进方形 tile;render 侧用**方形 quad** 采样整 tile(见 pretext-bridge.layout),
+// 故保持自然比例不压缩。精确 per-glyph tile bbox / MSDF 拐角留后续(0011 §6 触发条件)。
 
-import { fontForRole } from "./pretext-bridge";
+import { fontForRole, TILE_PX as TILE, SDF_BUFFER as BUFFER } from "./pretext-bridge";
 
-const TILE = 64; // 必须与 Rust render::atlas::TILE_PX 一致
-const BUFFER = 8; // 字形四周留白(给距离场空间)
+// TILE / BUFFER 单一来源在 pretext-bridge(layout 与光栅须几何一致;须与 Rust atlas::TILE_PX 一致)。
 // ① 距离场半径(px):越大梯度越缓 → 细笔画峰值刚过 0.5 → 缩小显示又细又虚。
 // 取 ≈ fontPx/6(48/6=8),峰值升到 ~0.69,细笔画饱满锐利。大范围发光/描边需更大范围时再单独留。
 const RADIUS = 8;

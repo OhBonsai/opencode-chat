@@ -20,6 +20,9 @@ async function main() {
 
   await init();
 
+  // 正文用浏览器系统字体栈(零打包,见 pretext-bridge SANS/MONO),无需加载自带字体。
+  // 固定字形的"文字当图片"走离线 MSDF(0011 §3.5 / TODO K′)。
+
   const params = new URLSearchParams(location.search);
   const serverUrl = params.get("server") ?? undefined;
   const sessionId = params.get("session") ?? undefined;
