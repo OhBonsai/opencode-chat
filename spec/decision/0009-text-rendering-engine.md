@@ -1,7 +1,7 @@
 # 决策记录 0009:文字渲染引擎 —— 浏览器系统字体桥 vs glyphon/cosmic-text
 
 - 日期:2026-06-14
-- 状态:已采纳(Plan 2 期;保留现状,glyphon 备案为未来升级路径)
+- 状态:Plan 2 期已采纳;**Plan 3 起被 [0011](./0011-gpu-text-as-sdf-primitive.md) 演进**——BR5 放宽为"打包自带字体",文字改走自有 SDF 图元(TinySDF),glyphon 升级路径作废
 - 前置:0001(画布架构,跨界/排版边界、BR5 零字体打包)、0004(markdown 管线)
 - 来源:Plan 2 H 接入 jcode 后,排查 jcode **实际渲染**实现(`jcode-desktop`),发现其文字
   渲染走 glyphon/cosmic-text,与我们当前的"浏览器系统字体 + JS 桥"是两条不同路线

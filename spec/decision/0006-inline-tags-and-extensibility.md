@@ -69,6 +69,37 @@ Settled 闭标签到 → 收尾
 
 不能让未闭合的 `<thinking>` 把后续正文全吃进推理区。
 
+## 5.1 块/区域级容器:`:::block` 开启符(2026-06-14 补)
+
+除 `<tag>` 外,再让 segmenter 认一种行首容器开启符 `:::name`(配对 `:::` 闭合),
+形如 `:::note … :::`。**复用本文已有机制,零解析器改动**(见 0010 §5.1 的边界结论:
+自定义语法走标签层,不换 markdown 解析器):
+
+- 扫描:行首 `:::` 与 `<` 同列为"开启符";hold 区(§3)同样悬住未闭合容器,
+  上限保护(§3)同样适用。
+- 行为:`name → TagBehavior`(§4)。`:::note`/`:::warning` 通常是 `Region`;
+  未知 `name` 仍默认 `Literal`(§4,绝不静默吞)。
+- 收尾:缺 `:::` 闭合时按 §5 的 FSM 隐式闭合(块边界 / turn 收尾 / 下一同级容器)。
+- 容器**内部**仍是 markdown,正常交 jcode/pulldown parse(§9 管线不变)。
+
+## 5.2 行内 chip:`@提及` / 引用角标(2026-06-14 补)
+
+行内标记(`@name`、引用角标)**不在 segmenter 切**——那会把段落撕碎、与 markdown
+打架。改为在 **markdown parse 之后**加一道 `StyledSpan` 后处理扫描:
+
+```
+markdown 段 → jcode parse → StyledSpan 序列
+  → 行内 chip 扫描:对 role=Text 的 span,命中 @\w+ / 角标模式的片段
+    拆出 → 改 role 为 Chip / Link(注册表决定行为)
+  → pretext layout(§9 之后,角色映射不变)
+```
+
+- 只动 `Text` role 的 span,不碰已成形的 Bold/Code/CodeBlock 等,避免误伤(如代码块内
+  的 `@`)。
+- 标准 `[^1]` 脚注**直接用 pulldown `ENABLE_FOOTNOTES`** 出脚注事件,无需自扫;
+  点角标跳转的数据按 0010 §5(可点链接 = `hyperlink + Action`)在 Plan 3 补。
+- 行为同样查注册表(§4),插件可注册新行内 chip 模式,管线不变。
+
 ## 6. 安全:标签是数据,永不解释为真 HTML
 
 来源(模型输出、插件)均不可信。画布渲染无 DOM 故无 XSS,但仍当纯数据:
@@ -93,9 +124,9 @@ part 里**。
 ```
 SSE text.delta → part.text 累积(原始文本)
 每帧(尾部脏块):
-  segmenter(hold 区)→ [markdown 段] + [标签区域]
-    markdown 段 → jcode parse → pretext layout → glyph instance(0004)
+  segmenter(hold 区)→ [markdown 段] + [标签区域 <tag>/:::容器]
+    markdown 段 → jcode parse → 行内 chip 后处理扫描(§5.2)→ pretext layout → glyph instance(0004)
     标签区域 → 注册表 resolve → 语义区域/chip/hidden/literal
-                → Region 进 FSM(§5),与 reasoning part 统一表现
+                → Region 进 FSM(§5/§5.1),与 reasoning part 统一表现
   render
 ```

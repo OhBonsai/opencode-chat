@@ -60,6 +60,21 @@ Plan 2 H 已采用 vendored `jcode-render-core`(内部 pulldown-cmark)解析 mar
 - **feature flag 化**:warp 把 tables/mermaid/images/agent-mode 各自 feature 门控,便于裁剪体积;
   我们做 embed(Plan 3)时可借鉴按特性裁剪。
 
+## 5.1 三方案四维深挖与"自定义语法"边界(2026-06-14 补)
+
+配套调研见 [markdown-parser-comparison](../research/markdown-parser-comparison.md)(性能/兼容性/开发成本/效果四维量化,把"三套方案"重定义为覆盖完整设计空间的三条路线:**事件流 pulldown / 手写 nom / 全 AST comrak·markdown-rs**)。量化要点:
+
+- **性能**:我们的真实负载是"每帧重 parse 几 KB 尾部块",pull 迭代器零 AST 分配最贴合;comrak 的 AST 在公开基准里约 **7× 慢于 pulldown**(1Password markdown-benchmarks),在高频路径上是净负担。
+- **兼容性**:comrak 的"100% 逐字节对齐 GitHub"、手写的"想加就加"换来的能力,当前 0004 的子集都不需要;pulldown 的 `Options` 已能开齐 表格/删除线/任务列表/脚注/**数学(`ENABLE_MATH`,0.11 起)**。
+- **开发成本**:A=0 增量;B≈6600 行自维护正确性;C=一次适配重写 + 体积/性能实测。
+
+**关键边界——"自定义语法"不走解析器,走标签层(0006)。** 评估中"comrak 全 GFM+MDX/frontmatter、逐字节对齐、手写想加就加"三点很诱人,但逐一对"流式 LLM 聊天渲染"核对后:math 已在 A;MDX/frontmatter 聊天正文用不上;逐字节对齐对乖 LLM 输出无回报;而唯一对定制产品真有价值的"自定义指令/标签",**应在 0006 的 pre-markdown segmenter + 标签注册表里加,而非换 markdown 解析器**:
+
+- 块/区域级(`<thinking>`、`:::note` 容器):segmenter 多认一种开启符,复用 hold 区 + FSM + 注册表(0006 §5.1 补)。
+- 行内角标(`@提及`、引用角标):pulldown 正常 parse 后加一道 `StyledSpan` 后处理扫描,把命中片段改成 `Chip`/`Link` role(0006 §5.2 补);标准 `[^1]` 脚注可直接用 pulldown `ENABLE_FOOTNOTES`,再按 §5(可点链接)补跳转数据。
+
+故"想加就加 / 罕见语法"在**标签层**已可满足,不构成换 B/C 的理由;只有"魔改核心 markdown 文法"或"逐字节对齐 GitHub"才触发下面的重评估。
+
 ## 6. 重新评估触发条件
 
 - 需要终端/编辑器级的**可编辑 markdown**或对解析有 pulldown-cmark 满足不了的定制(罕见语法、
@@ -71,4 +86,5 @@ Plan 2 H 已采用 vendored `jcode-render-core`(内部 pulldown-cmark)解析 mar
 - Warp markdown:`~/w/agentscode/warp/crates/markdown_parser`(`parse_markdown`/`FormattedText`/
   `compute_formatted_text_delta`)、`crates/editor/src/content/markdown.rs`(消费)
 - 我们采用:[`vendor/jcode-render-core`](../../vendor/README.md)、`crates/core/src/content.rs`
-- 相关:0004(markdown 语义层)、0009(渲染引擎)、Plan 2 G(块冻结)/H(markdown)
+- 四维深挖:[markdown-parser-comparison](../research/markdown-parser-comparison.md)(基准数据与来源在该文 §9)
+- 相关:0004(markdown 语义层)、0006(标签层 = 自定义语法落点)、0009(渲染引擎)、Plan 2 G(块冻结)/H(markdown)

@@ -106,3 +106,33 @@ wasm-pack build + vite build                                ✓(pkg 已重生成
 - **input / 选区 / hit-test**:含 ADR 0010 记的**可点超链接**(借鉴 warp `hyperlink+Action`)。
 - **SDF 字形 + 富 shader 效果**(发光/描边/溶解,0007);或按 ADR 0009 触发条件评估 glyphon。
 - 渲染降级 WebGL2/Canvas2D(0003 §5)、无障碍 DOM 镜像。
+
+---
+
+## 9. 审核记录(2026-06-14)
+
+对本文声明做代码层独立核实,**结论:属实,无注水**。可核实项全部对得上。
+
+**核实通过:**
+
+| 声明 | 结果 |
+|---|---|
+| 提交历史(F→G→H→I→J→jcode→ADR) | ✅ 8 个哈希全存在、描述/顺序吻合(`git log` 比对) |
+| 46 个 native 测试 | ✅ 精确 46 个 `#[test]`;分相位吻合(content 7 / fsm 6 / replay 3 / store 收敛+幂等 / app 冻结·裁剪·快照·resync) |
+| 各相位关键实现 | ✅ `parse_snapshot`/`prime_from_snapshot`/`resync_from_snapshot`/`TurnTracker`/`remend`/`fontForRole` 均在 |
+| 测试名兑现卖点 | ✅ `block_freeze_skips_settled_relayout`、`viewport_culls_offscreen_blocks`、`final_state_converges_to_snapshot_under_faults`、`snapshot_apply_is_idempotent`、`replay_is_deterministic` |
+| 推迟项确属推迟非破损 | ✅ `syntect` 0 引用、`glyphon` 0 引用,与 §6 / ADR 0009 一致 |
+| 与 ADR 一致 | ✅ 0009(不上 glyphon)、0010(沿用 pulldown);jcode 实际开了 TABLES/MATH/STRIKETHROUGH/TASKLISTS/FOOTNOTES/GFM |
+| 构建新鲜度 | ✅ target 编译于 06-13 17:07,晚于最新源文件 17:06 → 产物对应当前代码 |
+
+**本环境未能独立复核(已诚实标注):**
+
+- ⚠️ **卡口"全绿"未亲自重跑**:审核沙箱无 Rust 工具链(无 `cargo`),§4 的 fmt/clippy/test/wasm-build 仅由提交记录 + 构建产物佐证,未在审核环境 `cargo test` 复跑。
+- ⚠️ **§7 真机项**(≥60fps、10k 行内存曲线、滚动/重连手感、像素观感)确未验,需 GPU+浏览器。
+
+**小瑕疵(无伤大雅):**
+
+- §4/§1 "46 测(proptest…)":46 是 `#[test]` 计数,`store.rs` 另有 1 个 `proptest!` 属性测试未计入,实际为 46+1。
+- §3 H 仅列 表格/列表/数学,但 jcode 实际已开**脚注/任务列表/删除线**——比文档更全(印证 0006/0010 补记的"`[^1]` 直接用 `ENABLE_FOOTNOTES`")。
+
+**审核置信度**:结构/提交/测试/代码四项高置信;唯一悬空为"运行时绿 + 真机体验",恰为本文 §7 自圈待验项。
