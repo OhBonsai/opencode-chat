@@ -12,6 +12,7 @@
 //! 每帧编排见 [`app::Engine`]。
 
 mod app;
+mod camera;
 mod content;
 mod frame;
 mod fsm;
@@ -19,10 +20,12 @@ mod protocol;
 mod record;
 mod seam;
 mod smoother;
+mod spatial;
 mod store;
 mod support;
 
 pub use app::Engine;
+pub use camera::{Camera2D, Rect};
 pub use content::{parse_markdown, plain, StyleRole, StyledSpan};
 pub use frame::{FrameData, FrameGlyph};
 pub use fsm::{TurnStatus, TurnTracker};
@@ -32,5 +35,6 @@ pub use protocol::{
 pub use record::{Player, Record, Recorder};
 pub use seam::{Clock, Connection, LayoutEngine, LayoutResult, PlacedGlyph, RawEvent, RenderSink};
 pub use smoother::{Revealed, Smoother};
+pub use spatial::SpatialGrid;
 pub use store::Store;
 pub use support::{CollectSink, MonospaceLayout, NullSink};

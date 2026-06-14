@@ -20,10 +20,28 @@ pub struct FrameGlyph {
 }
 
 /// 一帧交给 [`RenderSink`](crate::RenderSink) 的全部内容。
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// 字形 `pos` 为**世界坐标**(Plan 3 L);相机变换在着色器里做,故本帧携带相机 `cam_pan`/
+/// `cam_zoom`(viewport 在 render 后端侧)。
+#[derive(Clone, Debug, PartialEq)]
 pub struct FrameData {
-    /// 本帧可见字形(已带 spawn_time)。
+    /// 本帧可见字形(世界坐标 + spawn_time)。
     pub glyphs: Vec<FrameGlyph>,
     /// 当前帧时间(ms),作为着色器淡入的 `time` uniform。
     pub time_ms: f32,
+    /// 相机:屏幕左上角对应的世界坐标。
+    pub cam_pan: [f32; 2],
+    /// 相机缩放。
+    pub cam_zoom: f32,
+}
+
+impl Default for FrameData {
+    fn default() -> Self {
+        Self {
+            glyphs: Vec::new(),
+            time_ms: 0.0,
+            cam_pan: [0.0, 0.0],
+            cam_zoom: 1.0,
+        }
+    }
 }

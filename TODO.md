@@ -41,9 +41,10 @@
 - 参考:[0011 §3.3④](spec/decision/0011-gpu-text-as-sdf-primitive.md)、[0010](spec/decision/0010-markdown-parsing-strategy.md)
 
 ### R — 无障碍 DOM 镜像 + 渲染降级
-- [ ] 可见内容 **DOM 镜像**(屏幕阅读器)——**可嵌入组件的硬需求,别拖到最后**
-- [ ] WebGPU → WebGL2 → Canvas2D 降级兜底
-- 参考:[0003 §5](spec/decision/0003-fault-tolerance.md)、`api` 模块(无障碍镜像)
+- [ ] 可见内容 **DOM 镜像**(屏幕阅读器)——**可嵌入组件的硬需求,别拖到最后**;兼作"无 WebGPU 也无 WebGL2"的极端兜底
+- [ ] **WebGL2 路专测**(已通过 `Backends::GL` 启用、自动兜底,但未测);处理其限制:**无 compute → 逐字 compute 特效降级为 vertex+fragment**(见 0011 §3.4)
+- [ ] **Canvas2D 不做**(SDF/shader/compete 在 Canvas2D 上无意义;`RenderBackend` trait 留缝但不实现)
+- 参考:[0003 §5](spec/decision/0003-fault-tolerance.md)、[0011 §3.4](spec/decision/0011-gpu-text-as-sdf-primitive.md)、`api` 模块(无障碍镜像)
 
 ### S — 公共 API + React/Vue 封装 + npm 打包
 - [ ] 命令式 API / props / 事件 / 主题(`api` 模块)

@@ -3,12 +3,14 @@
 //! 严格分相(AR1):事件改状态(`apply`),渲染只读状态(`build_frame`)。
 //! 时间确定性(R8):内部 `now_ms` 由注入的 `dt_ms` 逐帧累加,不碰墙钟。
 
+use crate::camera::{Camera2D, Rect};
 use crate::content::parse_markdown;
 use crate::frame::{FrameData, FrameGlyph};
 use crate::fsm::{TurnStatus, TurnTracker};
 use crate::protocol::{decode, parse_snapshot, Event};
 use crate::seam::{Connection, LayoutEngine, PlacedGlyph, RenderSink};
 use crate::smoother::Smoother;
+use crate::spatial::SpatialGrid;
 use crate::store::Store;
 use crate::support::graphemes;
 
@@ -64,12 +66,12 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     max_width: f32,
     /// 只渲染该 session 的 part(`?session=`);None = 全渲染(Plan1 行为)。
     target_session: Option<String>,
-    /// 从顶部下滚的像素(0 = 顶部)。
-    scroll_offset: f32,
-    /// 视口高度(px),视口裁剪与锚底用。
-    viewport_height: f32,
+    /// 2D 相机(Plan 3 L):平移 + 缩放。Plan2 的 1D scroll 收敛进 pan.y。
+    camera: Camera2D,
     /// 锚底:在底部时新内容跟随滚动(0002 §6)。
     stick_to_bottom: bool,
+    /// CPU 空间索引(Plan 3 L):逐帧由块 AABB 重建,视口查可见块。
+    grid: SpatialGrid,
     /// 回合收尾跟踪(Phase I):多信号 + 看门狗,解决"忘了 idle 卡死"。
     turn: TurnTracker,
 }
@@ -87,9 +89,9 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             now_ms: 0.0,
             max_width,
             target_session: None,
-            scroll_offset: 0.0,
-            viewport_height: 600.0,
+            camera: Camera2D::new(max_width, 600.0),
             stick_to_bottom: true,
+            grid: SpatialGrid::new(),
             turn: TurnTracker::new(),
         }
     }
@@ -101,15 +103,27 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
 
     /// 设视口高度(画布尺寸变化时);视口裁剪与锚底据此。
     pub fn set_viewport_height(&mut self, height: f32) {
-        self.viewport_height = height.max(1.0);
+        let w = self.camera.viewport()[0];
+        self.camera.set_viewport(w, height);
     }
 
-    /// 滚动 `dy` 像素(正 = 向下/看更新内容)。向上滚脱离锚底,滚回底部自动重新跟随。
+    /// 滚动 `dy` 屏幕像素(正 = 向下/看更新内容)= 相机平移。向上滚脱离锚底,滚回底部自动跟随。
     pub fn scroll_by(&mut self, dy: f32) {
-        self.scroll_offset += dy;
+        self.camera.pan_by_screen(0.0, dy);
         if dy < 0.0 {
             self.stick_to_bottom = false;
         }
+    }
+
+    /// 围绕屏幕点缩放(Plan 3 L:ctrl+滚轮 / 双指)。缩放即脱离锚底。
+    pub fn zoom_by(&mut self, factor: f32, screen_x: f32, screen_y: f32) {
+        self.camera.zoom_at(factor, screen_x, screen_y);
+        self.stick_to_bottom = false;
+    }
+
+    /// 只读相机(供宿主/测试)。
+    pub fn camera(&self) -> &Camera2D {
+        &self.camera
     }
 
     /// 设过滤目标 session(`?session=`);None 全渲染。
@@ -205,9 +219,11 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         &mut self.sink
     }
 
-    /// 更新排版宽度(画布尺寸变化时)。
+    /// 更新排版宽度 + 相机视口宽(画布尺寸变化时)。
     pub fn set_max_width(&mut self, max_width: f32) {
         self.max_width = max_width;
+        let h = self.camera.viewport()[1];
+        self.camera.set_viewport(max_width, h);
     }
 
     /// 推进一帧。
@@ -338,72 +354,82 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
     }
 
-    /// 5) 组 FrameData:纵向堆叠各块,锚底 + 视口裁剪(屏外块不出 glyph,Phase G)。
+    /// 组 FrameData(Plan 3 L):块 AABB 入空间索引 → 相机视口查可见 → 出世界坐标 glyph。
+    /// 相机变换在着色器里做;锚底 = 相机 pan.y 跟随底部;块冻结仍在(ensure_layouts)。
     fn build_frame(&mut self) -> FrameData {
         self.ensure_layouts();
 
-        // 可绘制块(过滤掉非目标 session / 空块),累计内容高度。
-        let mut blocks: Vec<usize> = Vec::new();
-        let mut content_height = 0.0f32;
+        // 1) 收可绘制块(过滤非目标 session / 空块)+ 世界 top(只读借用)。
+        let mut drawable: Vec<(usize, f32, f32)> = Vec::new(); // (块下标, top, 高)
+        let mut top = 0.0f32;
         for (i, view) in self.views.iter().enumerate() {
             if self.is_filtered(view) {
                 continue;
             }
-            match &view.cache {
-                Some(c) if !c.placed.is_empty() => {
-                    blocks.push(i);
-                    content_height += c.height + BLOCK_GAP;
-                }
-                _ => {}
+            let Some(c) = &view.cache else { continue };
+            if c.placed.is_empty() {
+                continue;
             }
+            drawable.push((i, top, c.height));
+            top += c.height + BLOCK_GAP;
+        }
+        let content_height = top;
+
+        // 2) 重建空间索引(块 AABB)。
+        self.grid.clear();
+        for &(i, t, h) in &drawable {
+            self.grid.insert(i, &Rect::new(0.0, t, self.max_width, h));
         }
 
-        // 锚底 + 夹取滚动位置。
-        let max_scroll = (content_height - self.viewport_height).max(0.0);
+        // 3) 锚底:相机 pan.y 跟随底部并夹取。
+        let visible_h = self.camera.viewport()[1] / self.camera.zoom();
+        let max_pan_y = (content_height - visible_h).max(0.0);
+        let mut pan = self.camera.pan();
         if self.stick_to_bottom {
-            self.scroll_offset = max_scroll;
+            pan[1] = max_pan_y;
         }
-        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
-        if self.scroll_offset >= max_scroll - ANCHOR_THRESHOLD {
+        pan[1] = pan[1].clamp(0.0, max_pan_y);
+        self.camera.set_pan(pan[0], pan[1]);
+        if pan[1] >= max_pan_y - ANCHOR_THRESHOLD {
             self.stick_to_bottom = true;
         }
 
-        // 裁剪 + 出 glyph。overscan 一屏,减少滚动边缘空白。
-        let overscan = self.viewport_height;
+        // 4) 视口查可见块(grid 是 broad phase)→ 实际 AABB narrow phase → 出世界坐标 glyph。
+        let boxes: std::collections::HashMap<usize, (f32, f32)> =
+            drawable.iter().map(|&(i, t, h)| (i, (t, h))).collect();
+        let visible = self.camera.visible_world_rect();
+        let ids = self.grid.query(&visible);
         let mut glyphs = Vec::new();
-        let mut top = 0.0f32;
-        for &i in &blocks {
-            let view = &self.views[i];
-            let cache = view.cache.as_ref().expect("blocks 已筛选非空缓存"); // reason: 上面已保证
-            let bottom = top + cache.height;
-            let visible = bottom >= self.scroll_offset - overscan
-                && top <= self.scroll_offset + self.viewport_height + overscan;
-            if visible {
-                let last_spawn = view.revealed.len().saturating_sub(1);
-                for (j, placed) in cache.placed.iter().enumerate() {
-                    if cache.clusters[j] == "\n" {
-                        continue; // 换行不出字形
-                    }
-                    // spawn 近似:显示 grapheme j ← 源 reveal j(隐藏语法使两者略偏,单调即可,
-                    // 见 BlockCache);markdown 新增字符(列表标记等)用最后一次 reveal 的时刻。
-                    let spawn = view
-                        .revealed
-                        .get(j.min(last_spawn))
-                        .map_or(self.now_ms as f32, |r| r.1);
-                    glyphs.push(FrameGlyph {
-                        cluster: cache.clusters[j].clone(),
-                        pos: [placed.pos[0], placed.pos[1] + top - self.scroll_offset],
-                        size: placed.size,
-                        spawn_time: spawn,
-                        style: cache.roles[j],
-                    });
-                }
+        for id in ids {
+            let view = &self.views[id];
+            let Some(cache) = &view.cache else { continue };
+            let (block_top, block_h) = boxes.get(&id).copied().unwrap_or((0.0, 0.0));
+            if !Rect::new(0.0, block_top, self.max_width, block_h).intersects(&visible) {
+                continue; // narrow phase:实际矩形不相交 → 裁掉
             }
-            top = bottom + BLOCK_GAP;
+            let last_spawn = view.revealed.len().saturating_sub(1);
+            for (j, placed) in cache.placed.iter().enumerate() {
+                if cache.clusters[j] == "\n" {
+                    continue;
+                }
+                let spawn = view
+                    .revealed
+                    .get(j.min(last_spawn))
+                    .map_or(self.now_ms as f32, |r| r.1);
+                glyphs.push(FrameGlyph {
+                    cluster: cache.clusters[j].clone(),
+                    pos: [placed.pos[0], placed.pos[1] + block_top], // 世界坐标
+                    size: placed.size,
+                    spawn_time: spawn,
+                    style: cache.roles[j],
+                });
+            }
         }
         FrameData {
             glyphs,
             time_ms: self.now_ms as f32,
+            cam_pan: self.camera.pan(),
+            cam_zoom: self.camera.zoom(),
         }
     }
 
@@ -632,5 +658,37 @@ mod tests {
             Some("live"),
             "live 块不应被 resync 覆盖"
         );
+    }
+
+    #[test]
+    fn camera_pan_up_shows_earlier_blocks() {
+        // Plan 3 L:小视口锚底先看底部块;向上滚(相机平移)→ 看到顶部块,底部裁掉。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        eng.set_viewport_height(25.0);
+        let snap = r#"[
+            {"info":{"id":"m1","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p1","messageID":"m1","text":"AAAA"}]},
+            {"info":{"id":"m2","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p2","messageID":"m2","text":"BBBB"}]},
+            {"info":{"id":"m3","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p3","messageID":"m3","text":"CCCC"}]},
+            {"info":{"id":"m4","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p4","messageID":"m4","text":"DDDD"}]},
+            {"info":{"id":"m5","sessionID":"s","role":"a"},"parts":[{"type":"text","id":"p5","messageID":"m5","text":"EEEE"}]}
+        ]"#;
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        assert!(
+            eng.sink().visible_text().contains("EEEE"),
+            "初始锚底应见底部"
+        );
+        eng.scroll_by(-1000.0); // 滚到顶
+        eng.frame(16.0);
+        let v = eng.sink().visible_text();
+        assert!(v.contains("AAAA"), "向上滚应见顶部: {v}");
+        assert!(!v.contains("EEEE"), "底部应被裁掉: {v}");
+        assert!((eng.camera().zoom() - 1.0).abs() < 1e-6);
     }
 }

@@ -8,6 +8,9 @@ struct Globals {
     viewport: vec2<f32>,   // 画布像素尺寸
     time_ms: f32,          // 当前帧时间
     fade_ms: f32,          // 淡入时长;0 = 不淡入
+    cam_pan: vec2<f32>,    // 相机:屏幕左上角对应的世界坐标
+    cam_zoom: f32,         // 相机缩放
+    _pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -51,10 +54,12 @@ fn vs_main(@builtin(vertex_index) vid: u32, inst: InstanceIn) -> VsOut {
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0),
     );
     let c = corners[vid];
-    let px = inst.pos + c * inst.size;
+    let world = inst.pos + c * inst.size;
+    // 世界坐标 → 相机 → 屏幕 px → NDC(Plan 3 L)。
+    let screen = (world - globals.cam_pan) * globals.cam_zoom;
     let ndc = vec2<f32>(
-        px.x / globals.viewport.x * 2.0 - 1.0,
-        1.0 - px.y / globals.viewport.y * 2.0,
+        screen.x / globals.viewport.x * 2.0 - 1.0,
+        1.0 - screen.y / globals.viewport.y * 2.0,
     );
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);

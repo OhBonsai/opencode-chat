@@ -22,12 +22,14 @@ pub trait RenderBackend {
     fn atlas_alloc(&mut self, key: &str) -> Alloc;
     /// 上传一张 SDF tile 到槽。
     fn atlas_upload(&mut self, slot: Slot, sdf: &[u8]);
-    /// 绘制本帧实例。`time_ms`/`fade_ms` 驱动着色器淡入。
+    /// 绘制本帧实例。`time_ms`/`fade_ms` 驱动淡入;`cam_pan`/`cam_zoom` 是 2D 相机(L)。
     fn draw(
         &mut self,
         instances: &[GpuInstance],
         time_ms: f32,
         fade_ms: f32,
+        cam_pan: [f32; 2],
+        cam_zoom: f32,
     ) -> Result<(), RenderError>;
 }
 
@@ -275,11 +277,16 @@ impl RenderBackend for WebGpuBackend {
         instances: &[GpuInstance],
         time_ms: f32,
         fade_ms: f32,
+        cam_pan: [f32; 2],
+        cam_zoom: f32,
     ) -> Result<(), RenderError> {
         let globals = Globals {
             viewport: [self.config.width as f32, self.config.height as f32],
             time_ms,
             fade_ms,
+            cam_pan,
+            cam_zoom,
+            pad: 0.0,
         };
         self.queue
             .write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));

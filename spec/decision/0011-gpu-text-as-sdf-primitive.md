@@ -71,6 +71,19 @@
 
 **不搬**:3D brick、完整几何 clipmap、**逐帧重算/脏-brick 增量机器**(我们字形静态、只追加,没有他"对既有几何任意编辑后快速重算"的最难问题——故对**文字**不搬,仅画布多对象用 ②③ 的空间索引)。
 
+### 3.4 后端特效分级(WebGPU 全 / WebGL2 无 compute)
+
+图形层只有 wgpu 一个抽象;instance 开 `Backends::BROWSER_WEBGPU | Backends::GL`,**WebGPU 优先、WebGL2(wgpu GL 后端)自动兜底,同一份代码**(0003 §5)。但两后端能力不同,特效要分级:
+
+| 能力 | WebGPU | WebGL2(兜底) |
+|---|---|---|
+| SDF 文字(fragment 采样距离场) | ✅ | ✅ |
+| `spawn_time` 淡入、发光/描边/溶解(纯 fragment/vertex) | ✅ | ✅ |
+| **逐字 compute 动效(§3.2:物理/布局/排序)** | ✅ | ❌ **WebGL2 无 compute shader** |
+| 动态字数 indirect draw | ✅ | ⚠️ 受限 |
+
+落地纪律:**核心可读性(SDF 文字 + 时间驱动 VS 淡入)在两后端都保**;**compute 路做成可选增强**,WebGL2 下静默降级为 vertex+fragment,不报错、不缺内容。Canvas2D **不实现**;极端"无 WebGPU 也无 WebGL2"交给 a11y 的 DOM 镜像(§4)兜底。
+
 ## 4. 不变量与影响
 
 - **不变量保持**:0001 §2.2 的 content→layout→render 契约(StyledSpan/角色、平铺位置)**不动**;`content.rs` 与解析器一行不改。换的是 layout 桥 + render 后端(atlas/scene/shader)。

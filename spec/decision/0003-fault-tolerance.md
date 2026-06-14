@@ -106,6 +106,14 @@ EventSource 自带重连不能覆盖"连接僵死"(TCP 未断但无数据)的情
 第 3 层大概率够用:负载极轻(带 alpha 的纹理 quad、可见区几千实例、无 3D 无
 overdraw),SwiftShader 在普通 CPU 上可维持可用帧率。
 
+**实现状态(2026-06-14)**:第 1–3 层**已启用**——`crates/wasm/src/lib.rs` 的 instance
+开 `Backends::BROWSER_WEBGPU | Backends::GL`,`request_adapter` 自动选 WebGPU,否则落 wgpu 的
+GL 后端(= WebGL2,软/硬光栅对代码透明),**同一份 wgpu 代码,无需另写**(只是 WebGL2 路尚未专测)。
+**第 4 层 Canvas2D 后端未实现**(`RenderBackend` trait 是为它留的缝,但无实现)。
+**注意**:WebGL2 **无 compute shader**,故 [0011 §3.2](./0011-gpu-text-as-sdf-primitive.md) 的逐字 compute
+特效是 WebGPU 专属,WebGL2 路降级为 vertex+fragment(SDF 文字、`spawn_time` 淡入仍在)——见 0011 §3.4
+后端特效分级。极端"无 WebGPU 也无 WebGL2"建议交给 a11y 的 DOM 镜像兜底,不再单写 Canvas2D 渲染器。
+
 ### 5.1 后端 trait 边界
 
 文档模型、FSM、平滑器、pretext 排版、块高度缓存全部与渲染器无关。需替换的只有

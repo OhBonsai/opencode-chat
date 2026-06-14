@@ -70,10 +70,13 @@ impl RenderSink for GpuSink {
                 layer: a.slot.page,
             });
         }
-        if let Err(e) = self
-            .backend
-            .draw(&instances, frame.time_ms, self.profile.fade_ms())
-        {
+        if let Err(e) = self.backend.draw(
+            &instances,
+            frame.time_ms,
+            self.profile.fade_ms(),
+            frame.cam_pan,
+            frame.cam_zoom,
+        ) {
             tracing::warn!(target: "M10", "draw 失败: {e}");
         }
     }
@@ -244,9 +247,16 @@ async fn init_and_run(
     let on_wheel = Closure::wrap(Box::new(move |e: web_sys::WheelEvent| {
         e.prevent_default();
         let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
-        let dy = (e.delta_y() * dpr) as f32;
         if let Some(app) = state_w.borrow_mut().as_mut() {
-            app.engine.scroll_by(dy);
+            if e.ctrl_key() {
+                // ctrl+滚轮 = 围绕指针缩放(Plan 3 L)。
+                let factor = if e.delta_y() < 0.0 { 1.1 } else { 1.0 / 1.1 };
+                let sx = (f64::from(e.offset_x()) * dpr) as f32;
+                let sy = (f64::from(e.offset_y()) * dpr) as f32;
+                app.engine.zoom_by(factor, sx, sy);
+            } else {
+                app.engine.scroll_by((e.delta_y() * dpr) as f32);
+            }
         }
     }) as Box<dyn FnMut(web_sys::WheelEvent)>);
     let _ = canvas.add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref());

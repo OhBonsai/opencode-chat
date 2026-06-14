@@ -28,11 +28,17 @@ impl EffectProfile {
     }
 }
 
-/// 着色器全局 uniform(对应 glyph.wgsl 的 `Globals`)。
+/// 着色器全局 uniform(对应 glyph.wgsl 的 `Globals`)。含 2D 相机(Plan 3 L)。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct Globals {
     pub viewport: [f32; 2],
     pub time_ms: f32,
     pub fade_ms: f32,
+    /// 相机:屏幕左上角对应的世界坐标。
+    pub cam_pan: [f32; 2],
+    /// 相机缩放。
+    pub cam_zoom: f32,
+    /// 对齐填充(uniform 16 字节对齐)。
+    pub pad: f32,
 }
