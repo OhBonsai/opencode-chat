@@ -6,7 +6,7 @@
 //! Plan 3 K:atlas 存 SDF tile(R8 多页),实例由组装方按可见集逐帧构建(它持 JS 光栅器),
 //! 后端只负责 atlas 槽位管理 + 上传 + 绘制。
 
-use crate::atlas::{Alloc, SdfAtlas, Slot};
+use crate::atlas::{Alloc, MsdfAtlas, SdfAtlas, Slot};
 use crate::effects::Globals;
 use crate::scene::{GpuInstance, RectInstance};
 
@@ -25,6 +25,14 @@ pub trait RenderBackend {
     /// atlas 可观测:(占用, 容量, 累计淘汰)。默认 0(非 GPU 后端可不实现)。
     fn atlas_stats(&self) -> (usize, usize, u64) {
         (0, 0, 0)
+    }
+    /// (重)建 MSDF 静态图集为 `w×h×pages`(0015)。默认 no-op。
+    fn msdf_init(&mut self, _w: u32, _h: u32, _pages: u32) {}
+    /// 上传一整页 MSDF RGBA 像素到第 `page` 层。默认 no-op。
+    fn msdf_upload(&mut self, _page: u32, _rgba: &[u8]) {}
+    /// MSDF 图集是否已加载(决定能否解析 MSDF 源)。默认 false。
+    fn msdf_loaded(&self) -> bool {
+        false
     }
     /// 绘制本帧。`rects` 作背景先于 `glyphs`(同相机/裁剪,Plan 4B);`time_ms`/`fade_ms`
     /// 驱动淡入;`cam_pan`/`cam_zoom` 是 2D 相机(L)。
@@ -58,6 +66,38 @@ const CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// 构建 glyph bind group(globals + R8 atlas + sampler + MSDF 图集)。MSDF 纹理重建后需重调。
+fn make_glyph_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    globals_buf: &wgpu::Buffer,
+    atlas: &SdfAtlas,
+    msdf: &MsdfAtlas,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("glyph-bind-group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(atlas.view()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(atlas.sampler()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(msdf.view()),
+            },
+        ],
+    })
+}
+
 /// WebGPU 后端。
 pub struct WebGpuBackend {
     surface: wgpu::Surface<'static>,
@@ -66,8 +106,10 @@ pub struct WebGpuBackend {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     globals_buf: wgpu::Buffer,
+    bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     atlas: SdfAtlas,
+    msdf: MsdfAtlas,
     instance_buf: Option<wgpu::Buffer>,
     instance_cap: u64,
     rect_pipeline: wgpu::RenderPipeline,
@@ -132,6 +174,7 @@ impl WebGpuBackend {
         surface.configure(&device, &config);
 
         let atlas = SdfAtlas::new(&device);
+        let msdf = MsdfAtlas::dummy(&device);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glyph-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/glyph.wgsl").into()),
@@ -166,6 +209,17 @@ impl WebGpuBackend {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // 3:MSDF 静态图集(RGBA D2Array,0015);未加载时为 1×1 占位。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -176,24 +230,7 @@ impl WebGpuBackend {
             mapped_at_creation: false,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glyph-bind-group"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: globals_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(atlas.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(atlas.sampler()),
-                },
-            ],
-        });
+        let bind_group = make_glyph_bind_group(&device, &bind_layout, &globals_buf, &atlas, &msdf);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("glyph-pipeline-layout"),
@@ -297,8 +334,10 @@ impl WebGpuBackend {
             config,
             pipeline,
             globals_buf,
+            bind_layout,
             bind_group,
             atlas,
+            msdf,
             instance_buf: None,
             instance_cap: 0,
             rect_pipeline,
@@ -362,6 +401,26 @@ impl RenderBackend for WebGpuBackend {
 
     fn atlas_upload(&mut self, slot: Slot, sdf: &[u8]) {
         self.atlas.upload(&self.queue, slot, sdf);
+    }
+
+    fn msdf_init(&mut self, w: u32, h: u32, pages: u32) {
+        self.msdf.init(&self.device, w, h, pages);
+        // 纹理换了 → 重建 bind group 指向新 view。
+        self.bind_group = make_glyph_bind_group(
+            &self.device,
+            &self.bind_layout,
+            &self.globals_buf,
+            &self.atlas,
+            &self.msdf,
+        );
+    }
+
+    fn msdf_upload(&mut self, page: u32, rgba: &[u8]) {
+        self.msdf.upload_page(&self.queue, page, rgba);
+    }
+
+    fn msdf_loaded(&self) -> bool {
+        self.msdf.loaded()
     }
 
     fn draw(

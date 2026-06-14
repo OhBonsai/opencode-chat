@@ -16,6 +16,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas_tex: texture_2d_array<f32>;
 @group(0) @binding(2) var atlas_samp: sampler;
+@group(0) @binding(3) var msdf_tex: texture_2d_array<f32>;  // 离线烘焙 MSDF(0015,RGBA 页)
 
 struct InstanceIn {
     @location(0) pos: vec2<f32>,       // 左上角世界 px
@@ -89,17 +90,18 @@ fn median3(c: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let tex = textureSample(atlas_tex, atlas_samp, in.uv, i32(in.layer));
+    // 两源都在统一控制流里采(textureSample/fwidth 需 uniform control flow),再按 kind 选;
+    // 非 MSDF 实例的 msdf 采样作废(dummy 1×1 或越界层被 clamp,安全)。
+    let r8 = textureSample(atlas_tex, atlas_samp, in.uv, i32(in.layer));
+    let m = textureSample(msdf_tex, atlas_samp, in.uv, i32(in.layer)).rgb;
+    let cov_sdf = sdf_coverage(r8.r);
+    let cov_msdf = sdf_coverage(median3(m));
     var cov: f32;
     switch in.kind {
-        // 0=位图覆盖率:R8 存的就是 alpha 覆盖率,直采(1× 锐、不缩放)。
-        case 0u: { cov = tex.r; }
-        // 2=MSDF:median(r,g,b) 还原距离场再 smoothstep(拐角锐;baked RGB 页)。
-        case 2u: { cov = sdf_coverage(median3(tex.rgb)); }
-        // 3=RGBA 彩字(emoji):直接输出,不上色。
-        case 3u: { return tex * in.alpha; }
-        // 1=TinySDF(默认):单通道距离场。
-        default: { cov = sdf_coverage(tex.r); }
+        case 0u: { cov = r8.r; }              // 位图覆盖率:R8 alpha 直采
+        case 2u: { cov = cov_msdf; }          // MSDF:median 距离场
+        case 3u: { return r8 * in.alpha; }    // RGBA 彩字:直接输出
+        default: { cov = cov_sdf; }           // TinySDF
     }
     return vec4<f32>(in.tint, cov * in.alpha);
 }

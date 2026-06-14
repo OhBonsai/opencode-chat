@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 /// 单个 SDF tile 边长(px)。SDF 缩放无关,一档够正文;极大字号的 MSDF 触发条件见 0011 §6。
-pub const TILE_PX: u32 = 64;
+pub const TILE_PX: u32 = 128; // 64→128:源分辨率 ×2,大字更锐(须与 layout-bridge TILE_PX 一致)
 /// 每页边长 = 多少个 tile(`PAGE_TILES²` 个/页)。
 const PAGE_TILES: u32 = 8;
 /// 每页边长(px)。
@@ -291,6 +291,105 @@ impl SdfAtlas {
             wgpu::Extent3d {
                 width: TILE_PX,
                 height: TILE_PX,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
+/// 离线烘焙的 **MSDF 图集**(0015):RGBA8 多页**静态**纹理。与 [`SdfAtlas`] 不同——没有运行时
+/// 分配/淘汰,UV 由 BMFont metrics 直给(平台侧持有);本结构只管纹理生命周期 + 上传。
+///
+/// 未加载时为 1×1 占位(`loaded()==false`),让 glyph 管线绑定始终合法;加载时 `init` 重建为
+/// `w×h×pages` 的 RGBA D2Array,逐页 `upload_page` 灌入(JS 解码 PNG → RGBA 字节)。
+pub struct MsdfAtlas {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    loaded: bool,
+}
+
+impl MsdfAtlas {
+    fn make(
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+        pages: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("msdf-atlas"),
+            size: wgpu::Extent3d {
+                width: w.max(1),
+                height: h.max(1),
+                depth_or_array_layers: pages.max(1),
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm, // 三通道 MSDF + a(可作覆盖)
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        (texture, view)
+    }
+
+    /// 1×1×1 占位(未加载)。
+    pub fn dummy(device: &wgpu::Device) -> Self {
+        let (texture, view) = Self::make(device, 1, 1, 1);
+        Self {
+            texture,
+            view,
+            loaded: false,
+        }
+    }
+
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    pub fn loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// (重)建为 `w×h×pages` 的 RGBA D2Array(调用方随后逐页 `upload_page` + 重建 bind group)。
+    pub fn init(&mut self, device: &wgpu::Device, w: u32, h: u32, pages: u32) {
+        let (texture, view) = Self::make(device, w, h, pages);
+        self.texture = texture;
+        self.view = view;
+        self.loaded = true;
+    }
+
+    /// 上传一整页 RGBA 像素(`w*h*4` 字节)到第 `page` 层。
+    pub fn upload_page(&self, queue: &wgpu::Queue, page: u32, rgba: &[u8]) {
+        let size = self.texture.size();
+        let need = (size.width * size.height * 4) as usize;
+        if rgba.len() < need {
+            tracing::warn!(target: "M8", "MSDF page 尺寸不足({} < {need}),跳过", rgba.len());
+            return;
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: page,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba[..need],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width * 4),
+                rows_per_image: Some(size.height),
+            },
+            wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
                 depth_or_array_layers: 1,
             },
         );
