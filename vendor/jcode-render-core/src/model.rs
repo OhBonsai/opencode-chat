@@ -191,6 +191,15 @@ pub struct Block {
     /// [`BlockKind::Table`]; layout is deferred to the front-end adapter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub table: Vec<Vec<String>>,
+    /// Per-cell styled spans (row-major, mirrors [`Block::table`]); preserves
+    /// inline emphasis/code/link inside table cells that the flat `table`
+    /// strings drop. Empty when not a table.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub table_spans: Vec<Vec<Vec<StyledSpan>>>,
+    /// Per-column horizontal alignment (GFM `:--` / `:-:` / `--:`). Empty when
+    /// not a table; index past the end → [`Alignment::Left`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub table_align: Vec<Alignment>,
 }
 
 impl Block {
@@ -199,6 +208,8 @@ impl Block {
             kind,
             lines,
             table: Vec::new(),
+            table_spans: Vec::new(),
+            table_align: Vec::new(),
         }
     }
 
@@ -208,6 +219,25 @@ impl Block {
             kind: BlockKind::Table,
             lines: Vec::new(),
             table: rows,
+            table_spans: Vec::new(),
+            table_align: Vec::new(),
+        }
+    }
+
+    /// Table block with rich per-cell spans + per-column alignment (front-ends
+    /// that style cells / honor alignment use these; `table` strings stay for
+    /// width-only layout).
+    pub fn table_rich(
+        rows: Vec<Vec<String>>,
+        spans: Vec<Vec<Vec<StyledSpan>>>,
+        align: Vec<Alignment>,
+    ) -> Self {
+        Self {
+            kind: BlockKind::Table,
+            lines: Vec::new(),
+            table: rows,
+            table_spans: spans,
+            table_align: align,
         }
     }
 }

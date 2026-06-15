@@ -43,6 +43,27 @@ impl InlineStyle {
     }
 }
 
+/// pulldown 的列对齐 → 中立模型对齐(`None`/`Left` → Left)。
+fn map_alignment(a: &pulldown_cmark::Alignment) -> Alignment {
+    match a {
+        pulldown_cmark::Alignment::Right => Alignment::Right,
+        pulldown_cmark::Alignment::Center => Alignment::Center,
+        _ => Alignment::Left,
+    }
+}
+
+/// 表格单元格 span 序列去首尾空白(首 span trim_start、尾 span trim_end),并丢空 span。
+fn trim_spans(mut spans: Vec<StyledSpan>) -> Vec<StyledSpan> {
+    if let Some(first) = spans.first_mut() {
+        first.text = first.text.trim_start().to_string();
+    }
+    if let Some(last) = spans.last_mut() {
+        last.text = last.text.trim_end().to_string();
+    }
+    spans.retain(|s| !s.text.is_empty());
+    spans
+}
+
 struct ListFrame {
     ordered: bool,
     next_number: u64,
@@ -171,6 +192,13 @@ pub fn parse_markdown(text: &str) -> Document {
     let mut table_rows: Vec<Vec<String>> = Vec::new();
     let mut table_row: Vec<String> = Vec::new();
     let mut current_cell = String::new();
+    // Rich (styled) parallel of the flat strings above: preserves inline
+    // emphasis/code/link per cell + per-column alignment (so front-ends can
+    // style cells and honor `:--`/`:-:`/`--:`).
+    let mut table_rows_spans: Vec<Vec<Vec<StyledSpan>>> = Vec::new();
+    let mut table_row_spans: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut current_cell_spans: Vec<StyledSpan> = Vec::new();
+    let mut table_align: Vec<Alignment> = Vec::new();
 
     // Blockquote line accumulation. Legacy emits one rendered line per source
     // line inside a quote (soft breaks split lines), so we buffer the lines and
@@ -372,7 +400,7 @@ pub fn parse_markdown(text: &str) -> Document {
             }
 
             // ---- tables ----
-            Event::Start(Tag::Table(_)) => {
+            Event::Start(Tag::Table(aligns)) => {
                 flush_paragraph(
                     &mut doc,
                     &mut spans,
@@ -383,27 +411,36 @@ pub fn parse_markdown(text: &str) -> Document {
                 );
                 in_table = true;
                 table_rows.clear();
+                table_rows_spans.clear();
+                table_align = aligns.iter().map(map_alignment).collect();
             }
             Event::Start(Tag::TableHead) | Event::Start(Tag::TableRow) => {
                 table_row.clear();
+                table_row_spans.clear();
             }
             Event::Start(Tag::TableCell) => {
                 current_cell.clear();
+                current_cell_spans.clear();
             }
             Event::End(TagEnd::TableCell) => {
                 table_row.push(current_cell.trim().to_string());
+                table_row_spans.push(trim_spans(std::mem::take(&mut current_cell_spans)));
                 current_cell.clear();
             }
             Event::End(TagEnd::TableHead) | Event::End(TagEnd::TableRow) => {
                 if !table_row.is_empty() {
                     table_rows.push(std::mem::take(&mut table_row));
+                    table_rows_spans.push(std::mem::take(&mut table_row_spans));
                 }
             }
             Event::End(TagEnd::Table) => {
                 in_table = false;
                 if !table_rows.is_empty() {
-                    doc.blocks
-                        .push(Block::table(std::mem::take(&mut table_rows)));
+                    doc.blocks.push(Block::table_rich(
+                        std::mem::take(&mut table_rows),
+                        std::mem::take(&mut table_rows_spans),
+                        std::mem::take(&mut table_align),
+                    ));
                 }
             }
 
@@ -413,6 +450,18 @@ pub fn parse_markdown(text: &str) -> Document {
                     image_alt.push_str(&t);
                 } else if in_table {
                     current_cell.push_str(&t);
+                    // 富文本:链接内文字取 Link 角色(URL 由 End(Link) 丢弃,不泄漏),否则取当前内联样式。
+                    let role = if link_targets.is_empty() {
+                        style.role()
+                    } else {
+                        StyleRole::Link
+                    };
+                    current_cell_spans.push(StyledSpan {
+                        text: t.to_string(),
+                        role,
+                        fill: FillRole::None,
+                        attrs: style.attrs(),
+                    });
                 } else if in_code_block {
                     code_buf.push_str(&t);
                 } else {
@@ -430,6 +479,12 @@ pub fn parse_markdown(text: &str) -> Document {
             Event::Code(t) => {
                 if in_table {
                     current_cell.push_str(&t);
+                    current_cell_spans.push(StyledSpan {
+                        text: t.to_string(),
+                        role: StyleRole::Code,
+                        fill: FillRole::Code,
+                        attrs: TextAttrs::none(),
+                    });
                 } else {
                     if let Some(marker) = pending_item_marker.take() {
                         spans.push(StyledSpan::new(marker, StyleRole::Dim));
@@ -651,7 +706,9 @@ pub fn parse_markdown(text: &str) -> Document {
             Event::End(TagEnd::Strikethrough) => style.strike = false,
             Event::End(TagEnd::Link) => {
                 if let Some(url) = link_targets.pop() {
-                    if !url.is_empty() {
+                    // 表格内不追加 ` (url)`:否则 URL 漏进段落缓冲、表后另起一行(bug)。
+                    // 格内链接只显文字(已带 Link 角色)。
+                    if !url.is_empty() && !in_table {
                         spans.push(StyledSpan::new(format!(" ({url})"), StyleRole::Dim));
                     }
                 }
