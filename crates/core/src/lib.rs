@@ -27,7 +27,9 @@ mod theme;
 
 pub use app::{Engine, FrameStats};
 pub use camera::{Camera2D, Rect};
-pub use content::{parse_markdown, plain, StyleRole, StyledSpan};
+pub use content::{
+    parse_markdown, parse_markdown_tables, plain, StyleRole, StyledSpan, TableRegion,
+};
 pub use frame::{FrameData, FrameGlyph, FrameRect};
 pub use fsm::{TurnStatus, TurnTracker};
 pub use protocol::{

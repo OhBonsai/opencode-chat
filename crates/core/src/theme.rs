@@ -18,6 +18,11 @@ pub(crate) const HEAD_RULE: [f32; 4] = [0.24, 0.27, 0.33, 0.9];
 /// 分隔线(`---`)。
 pub(crate) const HR_RULE: [f32; 4] = [0.20, 0.23, 0.28, 0.9];
 
+/// 表格表头底(淡,0014 A)。
+pub(crate) const TABLE_HEADER_BG: [f32; 4] = [0.16, 0.18, 0.24, 0.6];
+/// 表格分隔线(表头底线 / 表尾外边线)。
+pub(crate) const TABLE_RULE: [f32; 4] = [0.26, 0.29, 0.36, 0.9];
+
 /// 调试:块 AABB 描边。
 pub(crate) const DBG_BLOCK: [f32; 4] = [0.40, 0.90, 0.50, 0.7];
 /// 调试:视口框描边。

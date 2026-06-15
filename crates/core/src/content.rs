@@ -8,8 +8,8 @@
 //! (0004 §5.1),避免半截语法字符瞬间字面显形(AR9 同族)。
 
 use jcode_render_core::{
-    parse_markdown as jcode_parse, Block, BlockKind, StyleRole as JRole, StyledSpan as JSpan,
-    TextAttrs,
+    parse_markdown as jcode_parse, Alignment, Block, BlockKind, StyleRole as JRole,
+    StyledSpan as JSpan, TextAttrs,
 };
 
 /// 样式角色(content→layout/render 契约,architecture §五.3)。role 决定字体(粗/斜/等宽)
@@ -43,6 +43,16 @@ pub enum StyleRole {
     Rule,
     /// GitHub Alert 标签行(`[!NOTE]` 等);承载告警类型,render 侧据此上色左条(4B1)。
     AlertLabel,
+    /// 表格单元格(等宽对齐,0014 A);layout 用等宽字体 → 列对齐。
+    TableCell,
+    /// 表格表头单元格(等宽 + 表头色;render 侧据此画表头底 + 分隔线)。
+    TableHeader,
+    /// 表格体内强调(粗/链接文字):**等宽加粗**保列对齐 + 区分(0014 A,5E.1 #2)。
+    TableStrong,
+    /// 表格体内斜体:**等宽斜体**保列对齐(与 TableStrong 区分,5E.1 #2)。
+    TableEm,
+    /// 表格列分隔符(`│`):render 侧据其 x 画**全表高竖直网格线**(5E.1 #5);等宽 + 弱化色。
+    TableSep,
 }
 
 impl StyleRole {
@@ -110,18 +120,65 @@ pub fn plain(text: &str) -> Vec<StyledSpan> {
     }
 }
 
+/// 末块(活动块)是否「正在成形的表格」:还是 Paragraph,但每个非空行 trim 后以 `|` 开头
+/// —— 即表头/数据行已到、分隔行 `|---|` 未到,pulldown 尚未确认成 `Table`。
+/// 用于 reveal 抑制:这种态**别显示 raw `| a | b |`**(0017 §10 / thinking §3,避免 raw→snap 跳变)。
+fn is_pending_table(block: &Block) -> bool {
+    if !matches!(block.kind, BlockKind::Paragraph) {
+        return false;
+    }
+    let mut any = false;
+    for line in &block.lines {
+        let t = line.plain_text();
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        any = true;
+        if !t.starts_with('|') {
+            return false;
+        }
+    }
+    any
+}
+
+/// 表格结构(0014 B / plan5 §5F):`rows[r][c]` = 该格在 spans 数组里的 run 区间 `[start, end)`;
+/// `aligns[c]` = 列对齐(0=Left / 1=Center / 2=Right,与 JS 一致)。供 JS 像素两趟布局/格内折行。
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableRegion {
+    pub rows: Vec<Vec<(u32, u32)>>,
+    pub aligns: Vec<u8>,
+}
+
 /// 解析 markdown 源 → 带角色的 span 序列。块/行间以 `\n` 分隔(零宽换行由 layout 处理)。
 pub fn parse_markdown(src: &str) -> Vec<StyledSpan> {
+    emit_doc(src).0
+}
+
+/// 同 [`parse_markdown`],并额外返回表格结构(0014 B,plan5 §5F):每个表格一个 [`TableRegion`],
+/// run 区间相对返回的 spans 数组。供 layout 像素两趟对齐 + 格内折行。
+pub fn parse_markdown_tables(src: &str) -> (Vec<StyledSpan>, Vec<TableRegion>) {
+    emit_doc(src)
+}
+
+fn emit_doc(src: &str) -> (Vec<StyledSpan>, Vec<TableRegion>) {
     let patched = remend(&mark_alerts(src));
     let doc = jcode_parse(&patched);
     let mut out: Vec<StyledSpan> = Vec::new();
-    for block in &doc.blocks {
+    let mut tables: Vec<TableRegion> = Vec::new();
+    let last = doc.blocks.len().wrapping_sub(1);
+    for (i, block) in doc.blocks.iter().enumerate() {
+        // reveal 抑制(0017 §10):末块若是"正在成形的表格"则 hold——不发 raw,
+        // 待分隔行到达、pulldown 确认成 Table 后再揭示。避免 `| a | b |` 闪现后 snap。
+        if i == last && is_pending_table(block) {
+            continue;
+        }
         if !out.is_empty() {
             out.push(StyledSpan::new("\n", StyleRole::Normal)); // 块间换行
         }
-        emit_block(&mut out, block);
+        emit_block(&mut out, block, &mut tables);
     }
-    out
+    (out, tables)
 }
 
 /// GitHub Alert 标记(`[!NOTE]` 等,大小写不敏感)→ 显示标签;非告警返回 None。
@@ -202,8 +259,76 @@ fn emit_blockquote(out: &mut Vec<StyledSpan>, block: &Block) {
     }
 }
 
-/// 把一个 jcode Block 展平成我们的 span 序列(行间插 `\n`)。
-fn emit_block(out: &mut Vec<StyledSpan>, block: &Block) {
+/// 表格体内单元格 span 角色映射(0014 A 等宽 → 全 MONO 保列对齐,5E.1 #2):行内码 → `Code`
+/// (等宽绿),粗/斜/链接文字 → `TableStrong`(等宽加粗),其余 → `TableCell`。表头统一 `TableHeader`
+/// (保 render 的表头检测;表头极少带内联格式)。
+fn cell_role(span: &JSpan, is_header: bool) -> StyleRole {
+    if is_header {
+        return StyleRole::TableHeader;
+    }
+    match span.role {
+        JRole::Code | JRole::Math => StyleRole::Code,
+        JRole::Strong | JRole::Link => StyleRole::TableStrong,
+        _ if span.attrs.bold => StyleRole::TableStrong,
+        _ if span.attrs.italic => StyleRole::TableEm,
+        _ => StyleRole::TableCell,
+    }
+}
+
+/// 表格 → 单元格 run 序列(0014 B / plan5 §5F):每格按内容发 run(行内码/强调/链接分角色),
+/// **不补白、不发 `│` 分隔**(对齐/竖线/折行交 JS 像素两趟 + render rect);行间 `\n`。
+/// 返回 [`TableRegion`](每格在 `out` 里的 run 区间 `[start,end)` + 每列对齐 0/1/2),供 JS 定位。
+fn emit_table(
+    out: &mut Vec<StyledSpan>,
+    table: &[Vec<String>],
+    spans: &[Vec<Vec<JSpan>>],
+    align: &[Alignment],
+) -> TableRegion {
+    let cols = table.iter().map(Vec::len).max().unwrap_or(0);
+    let mut rows: Vec<Vec<(u32, u32)>> = Vec::with_capacity(table.len());
+    for (r, row) in table.iter().enumerate() {
+        if r > 0 {
+            out.push(StyledSpan::new("\n", StyleRole::Normal));
+        }
+        let is_header = r == 0;
+        let mut cells: Vec<(u32, u32)> = Vec::with_capacity(cols);
+        for c in 0..cols {
+            let start = out.len() as u32;
+            // 单元格内容:有富 span 用富 span(分角色),否则回退纯字符串(整格一个 run)。
+            match spans.get(r).and_then(|row| row.get(c)) {
+                Some(cell_spans) if !cell_spans.is_empty() => {
+                    for s in cell_spans {
+                        out.push(StyledSpan::new(s.text.clone(), cell_role(s, is_header)));
+                    }
+                }
+                _ => {
+                    let cell = row.get(c).map_or("", |s| s.trim());
+                    if !cell.is_empty() {
+                        let role = if is_header {
+                            StyleRole::TableHeader
+                        } else {
+                            StyleRole::TableCell
+                        };
+                        out.push(StyledSpan::new(cell.to_owned(), role));
+                    }
+                }
+            }
+            cells.push((start, out.len() as u32)); // 空格 → 空区间 (start==end)
+        }
+        rows.push(cells);
+    }
+    let aligns = (0..cols)
+        .map(|c| match align.get(c).copied().unwrap_or(Alignment::Left) {
+            Alignment::Right => 2u8,
+            Alignment::Center => 1u8,
+            Alignment::Left => 0u8,
+        })
+        .collect();
+    TableRegion { rows, aligns }
+}
+
+/// 把一个 jcode Block 展平成我们的 span 序列(行间插 `\n`);表格额外产出 [`TableRegion`] 入 `tables`。
+fn emit_block(out: &mut Vec<StyledSpan>, block: &Block, tables: &mut Vec<TableRegion>) {
     match &block.kind {
         // 分隔线:发一个零墨空格作锚点,render 侧画整宽细线(4B1)。
         BlockKind::ThematicBreak => {
@@ -217,23 +342,8 @@ fn emit_block(out: &mut Vec<StyledSpan>, block: &Block) {
         _ => {}
     }
     if matches!(block.kind, BlockKind::Table) && !block.table.is_empty() {
-        // 表格:每行一行,单元格用 " │ " 分隔;表头加粗。列对齐(等宽)留后续。
-        for (r, row) in block.table.iter().enumerate() {
-            if r > 0 {
-                out.push(StyledSpan::new("\n", StyleRole::Normal));
-            }
-            let role = if r == 0 {
-                StyleRole::Heading
-            } else {
-                StyleRole::Normal
-            };
-            for (c, cell) in row.iter().enumerate() {
-                if c > 0 {
-                    out.push(StyledSpan::new(" │ ", StyleRole::ListMarker));
-                }
-                push_text(out, cell, role);
-            }
-        }
+        let region = emit_table(out, &block.table, &block.table_spans, &block.table_align);
+        tables.push(region);
         return;
     }
     for (i, line) in block.lines.iter().enumerate() {
@@ -385,17 +495,99 @@ mod tests {
     }
 
     #[test]
-    fn table_renders_rows_not_raw_pipes() {
-        let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+    fn table_emits_cells_and_region() {
+        // 0014 B:表格发单元格 run(**无补白、无 │**)+ TableRegion(run 区间 + 列对齐),
+        // 像素对齐/竖线/折行交 JS(plan5 §5F)。
+        let md = "| Name | Score |\n|:--|--:|\n| Al | 3 |\n| Catherine | 1000 |";
+        let (spans, tables) = parse_markdown_tables(md);
+        let r = render(&spans);
+        assert!(
+            !r.contains('|') && !r.contains('│'),
+            "无 raw/装饰竖线: {r:?}"
+        );
+        assert!(!r.contains("---"), "分隔行不该显形: {r:?}");
+        for cell in ["Name", "Score", "Al", "Catherine", "1000"] {
+            assert!(r.contains(cell), "缺单元格 {cell}: {r:?}");
+        }
+        assert_eq!(role_of(&spans, "Name"), Some(StyleRole::TableHeader));
+        assert_eq!(role_of(&spans, "Catherine"), Some(StyleRole::TableCell));
+        // 结构:1 个表、3 行(表头 + 2 数据)、2 列、对齐 [Left, Right]。
+        assert_eq!(tables.len(), 1, "应有 1 个表格区");
+        let t = &tables[0];
+        assert_eq!(t.rows.len(), 3, "3 行");
+        assert_eq!(t.aligns, vec![0u8, 2u8], "列对齐 L/R");
+        for row in &t.rows {
+            assert_eq!(row.len(), 2, "每行 2 格");
+            for &(s, e) in row {
+                assert!(s <= e && (e as usize) <= spans.len(), "run 区间合法");
+            }
+        }
+    }
+
+    #[test]
+    fn table_inline_format_styled_not_plain() {
+        // 5E.1 #2:单元格内 `**粗**` / `` `码` `` 保留样式(等宽角色),非纯文本。
+        let md = "| H |\n|---|\n| **b** and `c` |";
+        let spans = parse_markdown(md);
+        assert_eq!(
+            role_of(&spans, "b"),
+            Some(StyleRole::TableStrong),
+            "粗 → TableStrong"
+        );
+        assert_eq!(role_of(&spans, "c"), Some(StyleRole::Code), "行内码 → Code");
+        assert!(!render(&spans).contains('*'), "raw ** 不应显形");
+        assert!(!render(&spans).contains('`'), "raw ` 不应显形");
+    }
+
+    #[test]
+    fn table_link_text_only_no_url_leak() {
+        // 5E.1 #3:格内链接只显文字(TableStrong),URL 不泄漏到表后(不另起一行)。
+        let md = "| H |\n|---|\n| [docs](https://example.com/very/long/path) |";
         let spans = parse_markdown(md);
         let r = render(&spans);
-        assert!(!r.contains('|'), "原始竖线不该显形: {r}");
-        assert!(!r.contains("---"), "分隔行不该显形: {r}");
-        assert!(r.contains('│'), "应有单元格分隔符: {r}");
-        for cell in ["A", "B", "1", "2"] {
-            assert!(r.contains(cell), "缺单元格 {cell}: {r}");
-        }
-        assert_eq!(role_of(&spans, "A"), Some(StyleRole::Heading)); // 表头加粗
+        assert!(r.contains("docs"), "链接文字应显示: {r}");
+        assert!(!r.contains("example.com"), "URL 不应泄漏: {r}");
+        assert!(!r.contains('('), "( 不应出现(无 (url) 后缀): {r}");
+        assert_eq!(role_of(&spans, "docs"), Some(StyleRole::TableStrong));
+    }
+
+    #[test]
+    fn table_alignment_in_region() {
+        // 5E.1 #1:对齐从 jcode 带出到 TableRegion.aligns(L/C/R = 0/1/2),布局由 JS 像素两趟用。
+        let md = "| L | C | R |\n|:--|:-:|--:|\n| a | b | c |";
+        let (_spans, tables) = parse_markdown_tables(md);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].aligns, vec![0u8, 1u8, 2u8]);
+    }
+
+    #[test]
+    fn pending_table_suppressed_until_delimiter() {
+        // 表头行已到、分隔行未到 → 末块"正在成形的表格" → 抑制,不闪 raw `| a | b |`(#4)。
+        let r1 = render(&parse_markdown("| Name | Score |"));
+        assert!(r1.is_empty(), "成形中的表格应抑制不显示,实得: {r1:?}");
+        // 多行(表头 + 半截分隔)仍未确认 → 继续抑制。
+        let r1b = render(&parse_markdown("| Name | Score |\n|--"));
+        assert!(r1b.is_empty(), "分隔行未完仍应抑制,实得: {r1b:?}");
+        // 分隔行到齐 → pulldown 确认成 Table → 揭示表头,且无 raw 竖线。
+        let r2 = render(&parse_markdown("| Name | Score |\n|---|---|"));
+        assert!(
+            r2.contains("Name") && r2.contains("Score"),
+            "确认后应显示表头: {r2}"
+        );
+        assert!(!r2.contains('|'), "应无 raw 竖线(用 │): {r2}");
+        // 前面有正常段落时,只抑制末尾的成形表格,前文照常显示。
+        let r3 = render(&parse_markdown("hello\n\n| a | b |"));
+        assert!(r3.contains("hello"), "前文段落应显示: {r3}");
+        assert!(!r3.contains("a | b"), "末尾成形表格应抑制: {r3}");
+    }
+
+    #[test]
+    fn table_empty_cell_is_empty_run_range() {
+        // 残缺格 → 空 run 区间(start==end),不 panic;CJK 对齐由 JS 像素量(不再靠字符数)。
+        let md = "| A | B |\n|---|---|\n| 1 |  |";
+        let (_spans, tables) = parse_markdown_tables(md);
+        let (s, e) = tables[0].rows[1][1]; // 第 2 行第 2 格 = 空
+        assert_eq!(s, e, "空格应是空 run 区间");
     }
 
     #[test]
@@ -558,9 +750,9 @@ $$E = mc^2$$
         assert_eq!(role_of(&spans, "fn main() {"), Some(StyleRole::CodeBlock));
         assert_eq!(role_of(&spans, "fn typed()"), Some(StyleRole::CodeBlock));
 
-        // Table
-        assert!(r.contains('│'), "表格应有单元格分隔符");
-        assert!(!r.contains('|'), "原始竖线不应显形");
+        // Table — 0014 B:无 │ 分隔(列由 JS 像素两趟定位);单元格内容在,raw |/│ 不显形
+        assert!(r.contains("Name") && r.contains("Alice"), "表格单元格应显示: {r}");
+        assert!(!r.contains('|') && !r.contains('│'), "raw 竖线不应显形: {r}");
 
         // Thematic break — 4B1:不再吐 ─ 字符,改发 Rule 锚点(render 画细线 rect)
         assert!(

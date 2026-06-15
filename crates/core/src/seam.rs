@@ -3,7 +3,7 @@
 //! 这些 trait 让 core 在 native 下可用 stub 实现跑测试(见 [`support`](crate::support)),
 //! 在 wasm 下接真实平台能力(见 `crates/wasm`)。
 
-use crate::content::StyledSpan;
+use crate::content::{StyledSpan, TableRegion};
 use crate::frame::FrameData;
 
 /// 事件来源(M1)。Player 重放也实现它,故同一套编排既能跑直播也能跑录像。
@@ -22,8 +22,14 @@ impl Connection for Box<dyn Connection> {
 /// 排版器(M7)。把样式 run 排成带位置的字形;Plan1 纯文本。
 pub trait LayoutEngine {
     /// 返回每个 grapheme 的位置 + 该块总高度。glyph 顺序必须与 span 文本的
-    /// grapheme 顺序一致(app 据此回填 spawn_time)。
-    fn layout(&mut self, spans: &[StyledSpan], max_width: f32) -> LayoutResult;
+    /// grapheme 顺序一致(app 据此回填 spawn_time)。`tables` = 该批 span 里的表格结构
+    /// (0014 B,run 区间 + 列对齐),供像素两趟对齐 + 格内折行;无表格传空切片。
+    fn layout(
+        &mut self,
+        spans: &[StyledSpan],
+        tables: &[TableRegion],
+        max_width: f32,
+    ) -> LayoutResult;
 }
 
 /// 时钟缝(R8)。core 自身用注入的 `dt_ms` 累加时间;Clock 供组装方(wasm 帧循环、

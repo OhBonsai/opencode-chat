@@ -5,7 +5,7 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::content::StyledSpan;
+use crate::content::{StyledSpan, TableRegion};
 use crate::frame::FrameData;
 use crate::seam::{LayoutEngine, LayoutResult, PlacedGlyph, RenderSink};
 
@@ -34,7 +34,12 @@ impl Default for MonospaceLayout {
 }
 
 impl LayoutEngine for MonospaceLayout {
-    fn layout(&mut self, spans: &[StyledSpan], max_width: f32) -> LayoutResult {
+    fn layout(
+        &mut self,
+        spans: &[StyledSpan],
+        _tables: &[TableRegion],
+        max_width: f32,
+    ) -> LayoutResult {
         let cols = (max_width / self.cell_w).floor().max(1.0) as usize;
         let mut glyphs = Vec::new();
         let mut col = 0usize;

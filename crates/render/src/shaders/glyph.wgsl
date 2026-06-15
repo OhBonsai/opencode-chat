@@ -47,6 +47,11 @@ fn style_color(s: u32) -> vec3<f32> {
         case 7u: { return vec3<f32>(0.45, 0.70, 1.0); }      // Link
         case 8u, 9u: { return vec3<f32>(0.62, 0.62, 0.68); } // Quote / ListMarker
         case 16u: { return vec3<f32>(0.78, 0.82, 0.90); }    // AlertLabel(类型色靠左条;文字取亮中性)
+        case 17u: { return vec3<f32>(0.86, 0.88, 0.92); }    // TableCell(表体:中性)
+        case 18u: { return vec3<f32>(0.97, 0.98, 1.0); }     // TableHeader(表头:略亮区分)
+        case 19u: { return vec3<f32>(1.0, 1.0, 1.0); }       // TableStrong(表体强调:最亮)
+        case 20u: { return vec3<f32>(0.86, 0.88, 0.92); }    // TableEm(表体斜体:同表体中性,靠斜体区分)
+        case 21u: { return vec3<f32>(0.30, 0.33, 0.40); }    // TableSep(列分隔符:弱化,与网格 rect 同灰)
         default: { return vec3<f32>(0.90, 0.90, 0.92); }     // Normal / Rule(零墨)
     }
 }

@@ -4,7 +4,7 @@
 //! 时间确定性(R8):内部 `now_ms` 由注入的 `dt_ms` 逐帧累加,不碰墙钟。
 
 use crate::camera::{Camera2D, Rect};
-use crate::content::{parse_markdown, StyleRole};
+use crate::content::{parse_markdown_tables, StyleRole};
 use crate::frame::{FrameData, FrameGlyph, FrameRect};
 use crate::fsm::{TurnStatus, TurnTracker};
 use crate::protocol::{decode, parse_snapshot, Event};
@@ -47,8 +47,17 @@ fn block_decorations(cache: &BlockCache, top: f32, max_width: f32, out: &mut Vec
     let rule = StyleRole::Rule.as_u32();
     let h1 = StyleRole::Heading.as_u32();
     let h2 = StyleRole::Heading2.as_u32();
+    let tcell = StyleRole::TableCell.as_u32();
+    let theader = StyleRole::TableHeader.as_u32();
+    let tstrong = StyleRole::TableStrong.as_u32();
+    let tem = StyleRole::TableEm.as_u32();
+    let tsep = StyleRole::TableSep.as_u32();
     let (mut cy0, mut cy1) = (f32::MAX, f32::MIN);
     let (mut qy0, mut qy1) = (f32::MAX, f32::MIN);
+    let (mut ty0, mut ty1) = (f32::MAX, f32::MIN); // 整表 y 范围
+    let (mut tx0, mut tx1) = (f32::MAX, f32::MIN); // 整表 x 范围(外框)
+    let mut row_ys: Vec<f32> = Vec::new(); // 各行顶 y(行横线)
+    let (mut has_header, mut has_table) = (false, false);
     let (mut has_code, mut has_quote, mut has_head_rule) = (false, false, false);
     let mut alert_label = String::new(); // 非空 = 该块是 Alert
                                          // 行内码 chip:同一行连续 Code 角色聚成一个圆角底,逐行 flush。
@@ -76,6 +85,18 @@ fn block_decorations(cache: &BlockCache, top: f32, max_width: f32, out: &mut Vec
         }
         if r == h1 || r == h2 {
             has_head_rule = true;
+        }
+        // 表格(0014 A / 5E.1 #5):收 y/x 范围、列分隔符 x、各行顶 y → 派生网格。
+        if r == theader {
+            has_header = true;
+        }
+        if r == theader || r == tcell || r == tstrong || r == tem || r == tsep {
+            has_table = true;
+            ty0 = ty0.min(y0);
+            ty1 = ty1.max(y1);
+            tx0 = tx0.min(x0);
+            tx1 = tx1.max(x1);
+            row_ys.push(y0);
         }
         // 分隔线:零墨 Rule 锚点 → 整宽细线(居其行垂直中点)。
         if r == rule {
@@ -122,6 +143,51 @@ fn block_decorations(cache: &BlockCache, top: f32, max_width: f32, out: &mut Vec
             color: theme::CODE_BG,
             radius: 6.0,
             stroke: 0.0,
+        });
+    }
+    if has_table {
+        let pad = 4.0; // 内容到边框的留白
+        let (gx0, gy0) = (tx0 - pad, ty0 - pad);
+        let (gw, gh) = ((tx1 - tx0) + 2.0 * pad, (ty1 - ty0) + 2.0 * pad);
+        // 各行顶去重排序(表头底界 + 行横线都用)。
+        row_ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut tops: Vec<f32> = Vec::new();
+        for &y in &row_ys {
+            if tops.last().is_none_or(|&p| (y - p).abs() >= 2.0) {
+                tops.push(y);
+            }
+        }
+        // 表头淡底:从**表顶**填到**表头/首行分隔线**(填满整个表头行,非仅字形高 → 修"底色不在表头")。
+        if has_header {
+            let header_bottom = tops.get(1).copied().unwrap_or(ty1 + pad);
+            out.push(FrameRect {
+                pos: [gx0, gy0],
+                size: [gw, (header_bottom - 1.0 - gy0).max(0.0)],
+                color: theme::TABLE_HEADER_BG,
+                radius: 0.0,
+                stroke: 0.0,
+            });
+        }
+        // 行横线:每个数据行顶(tops[1..])→ 表头分隔 + 行间线。
+        for &y in tops.iter().skip(1) {
+            out.push(FrameRect {
+                pos: [gx0, y - 1.0],
+                size: [gw, 1.0],
+                color: theme::TABLE_RULE,
+                radius: 0.0,
+                stroke: 0.0,
+            });
+        }
+        // 竖直列线**暂不画连续 rect**:连续竖线要求列对齐,而列对齐依赖 #7(LXGW 真 2:1);
+        // 当前 CJK 未对齐 → 各行分隔符 x 不同,画 rect 会变成错位竖线一片(5E.1 #5/#7)。
+        // 列分隔靠每行自带的 `│`(TableSep)字符(随行,不跨行错位);#7 落地后再开连续竖线。
+        // 外框(描边)—— 最后画。
+        out.push(FrameRect {
+            pos: [gx0, gy0],
+            size: [gw, gh],
+            color: theme::TABLE_RULE,
+            radius: 0.0,
+            stroke: 1.0,
         });
     }
     if has_quote {
@@ -497,8 +563,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 .iter()
                 .map(|(c, _)| c.as_str())
                 .collect();
-            let spans = parse_markdown(&text);
-            // 显示字形序列(markdown 渲染后):与 layout 的 grapheme 切分同源,保证 1:1。
+            let (spans, tables) = parse_markdown_tables(&text); // 0014 B:带表格结构
+                                                                // 显示字形序列(markdown 渲染后):与 layout 的 grapheme 切分同源,保证 1:1。
             let mut clusters = Vec::new();
             let mut roles = Vec::new();
             for span in &spans {
@@ -508,7 +574,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     roles.push(role);
                 }
             }
-            let result = self.layout.layout(&spans, self.max_width);
+            let result = self.layout.layout(&spans, &tables, self.max_width);
             self.views[i].cache = Some(BlockCache {
                 revealed_len: len,
                 width: self.max_width,
@@ -849,9 +915,14 @@ mod tests {
         calls: std::rc::Rc<std::cell::Cell<usize>>,
     }
     impl crate::LayoutEngine for CountingLayout {
-        fn layout(&mut self, spans: &[crate::StyledSpan], w: f32) -> crate::LayoutResult {
+        fn layout(
+            &mut self,
+            spans: &[crate::StyledSpan],
+            tables: &[crate::TableRegion],
+            w: f32,
+        ) -> crate::LayoutResult {
             self.calls.set(self.calls.get() + 1);
-            self.inner.layout(spans, w)
+            self.inner.layout(spans, tables, w)
         }
     }
 
