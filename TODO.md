@@ -1,8 +1,22 @@
 # TODO —— 产品相位 backlog(Plan 3 K/L 之后)
 
 - **近期可做项已拆出** → [plan4-polish](spec/plan/plan4-polish.md)(排版收口 + markdown 观感 + 基础调试器):含原 M(折行/分级/装饰/表格/令牌/pretext 清理)、调试器 P1 + 数据通道、per-role 度量。
+- **streaming 形变** → [plan5-streaming-markdown](spec/plan/plan5-streaming-markdown.md)(0016 机制 + 0017 落地 + 全 markdown 语法 streaming 规则 + 重放验证 case)。
 - **愿景/上限层** → [TODO2](TODO2.md):效果系统(原 N)、画布产品化、极致规模、交互深度。
 - 本文件 = **剩余产品相位 + Plan 2 欠账 + 决策锚点**;一条 ≈ 一个 Phase/PR,完成后上提到正式 plan。
+
+---
+
+## Plan 5 续(streaming markdown 未做项;总结见 [plan5_progress](spec/plan/plan5_progress.md))
+
+> Plan 5 已落地:机制 [0016] + 驱动 [0017] + 重放 5D + 真表格 [0014 B](像素两趟/CJK 对齐/字体跟随/resize 折行)。以下为未做,按价值排:
+
+- **★ reveal 节奏自主([0017 §10](spec/decision/0017-markdown-streaming-landing.md) 北极星)**:reveal 调度器(节奏与 token 解耦 / 限速 / **可刻意放慢**)+ **骨架先行**(表头框→填字)+ **非表格结构块 raw 抑制**(列表/围栏/公式/图片/链接)。设计 `design/thinking.md §1/§3`。
+- **★ SDF 面板/装饰图元([0018](spec/decision/0018-sdf-panel-decoration-primitive.md))**:`panel.wgsl` + 小 storage buffer(命令+扁平参数,**照搬 onedraw 数据模型**,见 [research/onedraw-analysis](spec/research/onedraw-analysis.md))→ **#5 真竖直网格 + AO + 圆角 + 选中/hover**;再**收编所有块装饰**(代码块底/引用/Alert)。设计 `design/thinking.md §4`。
+- **非表格 markdown 渲染质量**:列表(有序/嵌套/任务 `- [ ]`/松紧)、**删除线渲染**(attrs.strikethrough 已有未用)、多级引用;代码块**语法高亮**(并 H5)。
+- **非表格重放 case 补全(5D)**:嵌套/有序/任务列表、围栏语言标注、转义、自动链接、脚注。
+- **[0016] 机制留尾**:exit 淡出、GPU 双态(路 A)、policy 层(ease/dur 大表)、settle 后移出 Scene 内存优化。
+- 截图快照回归(5D4);`?verify` 黄金样张(并 [V](#v--组件内观感验证视图opinionated非兼容性测试))。
 
 ---
 
@@ -61,7 +75,10 @@
 - [ ] **行盒来源统一**:现 `LINE_HEIGHT = 1.4×` 硬编码;ascent/descent/行高统一来源,避免不同 role(标题大字/行内码 chip/引用)行高跳动。
 - [ ] **盒对齐**:行内码 chip / 标题 / Alert 标签 / 上下标的竖直居中与基线锚点。
 - [ ] **math 行内盒 baseline**(O 的 `$…$` 依赖,见 0013)。
-- 参考:[0015 §2.5](spec/decision/0015-glyph-source-fallback.md)、[0013](spec/decision/0013-math-latex-rendering.md)。
+- [ ] **用真实字体度量替代 measureText 近似**(行高 / 字高 / baseline / 对齐 / 字距 kerning):现在只有 Canvas2D `measureText`(仅 advance 宽)+ 硬编码 `LINE_HEIGHT=1.4` + 方形 cell,**无 ascent/descent/cap-height/baseline、无 kerning、对齐靠近似**。
+  - **参考 `troika-three-text`**(`./drei` 的 `<Text>` 即其薄封装:`src/core/Text.tsx` → `troika-three-text` 的 `TextMeshImpl`/`getTextRenderInfo`):用 **Typr 读字体表**拿 units-per-em / ascent / descent / cap-height / line-gap → **baseline 精确定位 + 行高**;支持 `letterSpacing`、`textAlign`、**锚点 `anchorX`/`anchorY`**(top/middle/baseline/bottom)、`maxWidth`+`overflowWrap`/`whiteSpace` 折行、`sdfGlyphSize` SDF。
+  - 落点:把"字体度量真值"引入 layout-bridge(读 woff/ttf 表或借 troika 思路),让 advance/baseline/行高/对齐都来自字体,而非 measureText + 常数。与 [TODO V] 观感验证一起收。
+- 参考:[0015 §2.5](spec/decision/0015-glyph-source-fallback.md)、[0013](spec/decision/0013-math-latex-rendering.md)、[troika-three-text](https://protectwise.github.io/troika/troika-three-text/) / drei `<Text>`([docs](https://drei.docs.pmnd.rs/abstractions/text),源码 `./drei/src/core/Text.tsx`)。
 
 ### V — 组件内「观感验证」视图(opinionated;非兼容性测试)
 

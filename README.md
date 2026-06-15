@@ -139,4 +139,7 @@ spec/          # 设计文档:decision(ADR 0000–0011)、plan、research、arch
 [0012 调试器 GUI:HTML vs egui](spec/decision/0012-debugger-gui-html-vs-egui.md) ·
 [0013 数学(LaTeX)渲染策略](spec/decision/0013-math-latex-rendering.md) ·
 [0014 表格两趟布局](spec/decision/0014-table-two-pass-layout.md) ·
-[0015 字形源解析与回退(Bitmap/TinySDF/MSDF)](spec/decision/0015-glyph-source-fallback.md)
+[0015 字形源解析与回退(Bitmap/TinySDF/MSDF)](spec/decision/0015-glyph-source-fallback.md) ·
+[0016 streaming 形变渲染机制(past→current 双关键帧)](spec/decision/0016-streaming-morph-render-model.md) ·
+[0017 markdown 流式落地(提交前沿 + 保守预测/和解)](spec/decision/0017-markdown-streaming-landing.md) ·
+[0018 SDF 装饰/面板图元(参数化 shader 框 + 共享 storage buffer)](spec/decision/0018-sdf-panel-decoration-primitive.md)

@@ -1,7 +1,7 @@
 # 决策记录 0014:表格列对齐(两趟布局)—— 现状、选项、为何独立成相位
 
 - 日期:2026-06-14
-- 状态:已采纳(方向定调;落地另起独立相位,见 §6)
+- 状态:已采纳;**A 等宽网格已落地(Plan 5,2026-06-15,见 §6)**;B 比例两趟仍为升级项
 - 前置:0001 §2.2(content→layout→render 契约 / 每帧一次跨界 AR10)、0010(解析沿用 pulldown-cmark / vendored jcode)、0011(quad/SDF 图元)、Plan 4B(矩形装饰图元已就位)
 - 触发:Plan 4B2「表格两趟列宽对齐」从 4B 拆出——它比 4B 其余项(引用条/Alert/hr/令牌)大一个量级,且有真实产品/工程取舍。
 
@@ -54,10 +54,16 @@ LLM 输出常含 GFM 表格。**解析侧已就位**:vendored jcode 开了 `ENAB
 - content→layout 契约本期**不动**;A 落地时仅在 content.rs 内做等宽补齐(仍输出扁平 run),契约依旧不变——这也是选 A 作 v1 的关键好处。
 - 设计令牌(0014 后续 A 用的网格线/斑马/表头色)并入 `crate::theme`(Plan 4B3 已建)。
 
-## 6. 落地清单(下一相位)
+## 6. 落地清单 — A 已落地(Plan 5,2026-06-15)
 
-- [ ] content.rs:`emit_table` 改等宽网格——按列 max 显示宽(CJK 计 2)补齐;表头 `Heading`、分隔行 → Rule/网格锚点。
-- [ ] app.rs `block_decorations`:从表格行/列锚点派生**网格线 + 斑马底 + 表头底** rect(复用 `FrameRect`)。
-- [ ] `theme.rs`:加 `TABLE_GRID`/`TABLE_ZEBRA`/`TABLE_HEADER` 令牌。
-- [ ] 测试:列对齐(等宽下竖线列对齐)、斑马/表头 rect、宽表不 panic。
-- [ ] (升级 B,另评审)扩 content→layout 契约带表结构 + JS 实测两趟 + 单元格受限宽折行。
+- [x] content.rs:`emit_table` 等宽网格——按列 max 显示宽(`display_width`,CJK/全角/emoji 计 2)空格补齐;新增角色 **`TableCell`/`TableHeader`**(末尾追加,as_u32=17/18),单元格间 `" │ "`(等宽 → 竖线列对齐)。单元格内联格式不解析(v1)。
+- [x] layout-bridge `fontForRole`:17/18 → **MONO 同字重**(表头表体列对齐;光栅 `glyph-raster` 同走 `fontForRole`,自动一致)。
+- [x] app.rs `block_decorations`:`TableHeader` y 范围 → **表头淡底 + 表头底线**;整表 y 范围 → 表尾外边线(复用 `FrameRect`)。
+- [x] `theme.rs`:加 `TABLE_HEADER_BG`/`TABLE_RULE`;`glyph.wgsl::style_color` 加 17/18(表头略亮)。
+- [x] 测试(content.rs):列对齐(每行首列等宽)、CJK 计 2 补齐、原始 `|`/`---` 不显形、首行 TableHeader 其余 TableCell。重放 `c06-table` 验流式列变宽。
+- [x] **单元格内联格式 + per-列对齐 + 链接不泄漏**(5E.1 #1/#2/#3,2026-06-15):**additive 升级 vendored jcode** 表格建模——`Block` 加 `table_spans`(cell=span 序列)+ `table_align`(map pulldown `Alignment`),`table` 纯串保留向后兼容;`in_table` 时 End(Link) 不追加 ` (url)`(修 URL 泄漏)。`emit_table` 按 `align` 左/右/居中补空,`cell_role`:码→`Code`、粗/斜/链接文字→新角色 **`TableStrong`**(as_u32=19,**等宽加粗** → 保列对齐 + 区分);`layout-bridge`/`glyph.wgsl` 加 19。content 4 测。
+- [~] **竖直网格线 / 斑马底**:未做(竖线由等宽 `│` 对齐替代;真网格/斑马需**列 x 坐标**,core 无 → 近 0014 B)。
+- [x] **(升级 B,已落地 2026-06-15)** content→layout 带 `TableRegion` sidecar(run 区间 + 列对齐)+ JS `placeTable` 像素两趟 + `wrapRange` 单元格受限宽折行 + 列缩到 MINC。**端到端接通**:content.rs(`parse_markdown_tables`、emit_table 去补白)/ trait `layout(spans, tables, max_width)`/ wasm bridge `apply` 第4参 / layout-bridge.ts。**解决 CJK 像素对齐 + 字体跟随 + resize 折行塞下(任意字体)**;弃"限制字体 LXGW"。详见 [plan5 §5F](../plan/plan5-streaming-markdown.md)。
+- [ ] (B 留尾)**连续竖直网格线**:需 JS 回传 `colX` 给 app 画全表高竖 rect(现:像素列间距 + 外框 + 行线 + 表头底,无 │);**删除线**装饰。
+
+> v1 边界:等宽对齐 + **per-列对齐** + **单元格内联(等宽:码/强调)** + 链接只显文字 + 表头底/线 + `│` 竖线。**未做**:真竖直网格线 rect、斑马、删除线装饰、超宽列折行/比例体(属 B)。

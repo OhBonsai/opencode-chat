@@ -68,3 +68,7 @@ web/public/fonts/*.ttc
 # 本地 dev 直接服务。要 out-of-box / CI 免烘,可删下面一行改为提交(见 0015 §2.3)。
 # 通配覆盖所有页/元数据/字集(lxgw-msdf.0.png、.json、.charset.txt 及未来扩展名)。
 web/public/fonts/lxgw-msdf.*
+
+lygia
+drei
+onedraw
