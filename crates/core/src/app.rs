@@ -605,6 +605,9 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     size: placed.size,
                     spawn_time: spawn,
                     style: cache.roles[j],
+                    // 身份(0016/0017):块在 views 里的下标(append-only 稳定)+ 块内 placed 下标。
+                    block_seq: id as u32,
+                    glyph_idx: j as u32,
                 });
             }
             if glyphs.len() > glyphs_before {

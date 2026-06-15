@@ -17,6 +17,10 @@ pub struct FrameGlyph {
     pub spawn_time: f32,
     /// 样式角色([`StyleRole`](crate::StyleRole) 的数值):决定 atlas 分桶与着色器上色。
     pub style: u32,
+    /// 块序号(append-only 稳定):render 侧 morph Scene 的身份高位(0016 §4.1 / 0017 §6)。
+    pub block_seq: u32,
+    /// 块内字块序号(append-only 稳定):morph Scene 身份低位。
+    pub glyph_idx: u32,
 }
 
 /// 一个矩形/圆角图元(Plan 4B:装饰底/边/条 + 4C3 调试几何)。世界坐标,与文字 quad 同

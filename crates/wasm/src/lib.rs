@@ -21,7 +21,9 @@ use std::rc::Rc;
 use infinite_chat_core::{
     Clock, Connection, Engine, FrameData, FrameGlyph, Player, Record, RenderSink,
 };
-use infinite_chat_render::{EffectProfile, RenderBackend, WebGpuBackend};
+use infinite_chat_render::{
+    EffectProfile, Geom, NodeId, RenderBackend, Sample, Scene, WebGpuBackend,
+};
 use wasm_bindgen::prelude::*;
 
 use crate::clock::WebClock;
@@ -108,6 +110,8 @@ struct GpuSink {
     src_counts: [u32; 4],
     /// 离线烘焙 MSDF 字体(coverage + metrics);None = 未加载(0015 §2.3)。
     msdf_font: Option<msdf::MsdfFont>,
+    /// streaming 形变保留态场景(0016):几何 past→current 补间,不跳变。
+    scene: Scene,
 }
 
 impl GpuSink {
@@ -181,14 +185,14 @@ impl GpuSink {
 }
 
 /// 从方格几何(`g.pos`/`g.size` = TILE 方格世界坐标)+ BMFont metrics 算 MSDF quad 的世界
-/// 几何(0015 §2.5)。方格里字形落在 `[SDF_BUFFER, TILE-SDF_BUFFER]`,em = `FONT_PX` 占比;
-/// 据此反推 pen 原点 / em 盒,再按 BMFont 字号缩放放置。
-fn msdf_instance(
+/// 几何(0015 §2.5)+ 不插值载荷。方格里字形落在 `[SDF_BUFFER, TILE-SDF_BUFFER]`,em = `FONT_PX`
+/// 占比;据此反推 pen 原点 / em 盒,再按 BMFont 字号缩放放置。
+fn msdf_node(
     g: &FrameGlyph,
     m: &msdf::MsdfGlyph,
     font_size: f32,
     atlas: (f32, f32),
-) -> infinite_chat_render::GpuInstance {
+) -> (Geom, Sample) {
     let tile = infinite_chat_render::TILE_PX as f32;
     let buf = infinite_chat_render::SDF_BUFFER as f32;
     let cell = g.size[0]; // 方格世界边长
@@ -199,24 +203,31 @@ fn msdf_instance(
     let pen_x = g.pos[0] + off;
     let top = g.pos[1] + off;
     let (aw, ah) = atlas;
-    infinite_chat_render::GpuInstance {
-        pos: [pen_x + m.xoff * k, top + m.yoff * k],
-        size: [m.w * k, m.h * k],
-        uv: [m.x / aw, m.y / ah, (m.x + m.w) / aw, (m.y + m.h) / ah],
-        spawn_time: g.spawn_time,
-        style: g.style,
-        layer: m.page,
-        kind: KIND_MSDF,
-    }
+    (
+        Geom {
+            pos: [pen_x + m.xoff * k, top + m.yoff * k],
+            size: [m.w * k, m.h * k],
+            alpha: 1.0,
+        },
+        Sample {
+            uv: [m.x / aw, m.y / ah, (m.x + m.w) / aw, (m.y + m.h) / ah],
+            style: g.style,
+            layer: m.page,
+            kind: KIND_MSDF,
+            spawn_time: g.spawn_time,
+        },
+    )
 }
 
 impl RenderSink for GpuSink {
     fn submit(&mut self, frame: &FrameData) {
         self.backend.atlas_begin_frame();
         self.src_counts = [0; 4];
-        let mut instances = Vec::with_capacity(frame.glyphs.len());
+        let now = frame.time_ms;
+        // 1) 解析源 + atlas + 算几何/载荷 → 活跃区布局快照(带稳定 NodeId,0016 §7)。
+        let mut snapshot: Vec<(NodeId, Geom, Sample)> = Vec::with_capacity(frame.glyphs.len());
         for g in &frame.glyphs {
-            // 源解析(0015 §2.2):MSDF 命中 / 运行时 R8(位图·TinySDF)/ 空洞。
+            let id = NodeId::new(g.block_seq, g.glyph_idx);
             match self.resolve(&g.cluster) {
                 Source::Msdf(m) => {
                     self.src_counts[KIND_MSDF as usize] += 1;
@@ -224,7 +235,8 @@ impl RenderSink for GpuSink {
                         .msdf_font
                         .as_ref()
                         .map_or((1.0, 1.0, 1.0), |f| (f.atlas_w, f.atlas_h, f.size));
-                    instances.push(msdf_instance(g, &m, size, (aw, ah)));
+                    let (geom, sample) = msdf_node(g, &m, size, (aw, ah));
+                    snapshot.push((id, geom, sample));
                 }
                 Source::Skip => {}
                 Source::Raster(kind) => {
@@ -246,18 +258,27 @@ impl RenderSink for GpuSink {
                             self.backend.atlas_upload(a.slot, &tile);
                         }
                     }
-                    instances.push(infinite_chat_render::GpuInstance {
-                        pos: g.pos,
-                        size: g.size,
-                        uv: a.slot.uv(),
-                        spawn_time: g.spawn_time,
-                        style: g.style,
-                        layer: a.slot.page,
-                        kind,
-                    });
+                    snapshot.push((
+                        id,
+                        Geom {
+                            pos: g.pos,
+                            size: g.size,
+                            alpha: 1.0,
+                        },
+                        Sample {
+                            uv: a.slot.uv(),
+                            style: g.style,
+                            layer: a.slot.page,
+                            kind,
+                            spawn_time: g.spawn_time,
+                        },
+                    ));
                 }
             }
         }
+        // 2) 提交快照 → join(0016 §4.4);3) 插值发射(几何 past→current 补间,不跳变)。
+        self.scene.commit(&snapshot, now);
+        let instances = self.scene.instances(now);
         // 装饰/调试矩形(Plan 4B):core 已算好世界坐标,直接平铺为 instance。
         let rects: Vec<infinite_chat_render::RectInstance> = frame
             .rects
@@ -486,6 +507,7 @@ async fn init_and_run(
         glyph_mode: GlyphMode::Auto,
         src_counts: [0; 4],
         msdf_font: None,
+        scene: Scene::new(120.0), // 过渡时长(policy 默认,0016 §8)
     };
     // 留给周期性 resync(Phase J)用:server+session。
     let resync_server = server_url.clone();
