@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use infinite_chat_core::{
-    Clock, Connection, Engine, FrameData, FrameGlyph, Player, Record, RenderSink,
+    Clock, Connection, Engine, FrameData, FrameGlyph, Player, Record, RenderSink, TableStyle,
 };
 use infinite_chat_render::{
     EffectProfile, Geom, NodeId, RenderBackend, Sample, Scene, WebGpuBackend,
@@ -86,6 +86,20 @@ impl GlyphMode {
 const KIND_BITMAP: u32 = 0;
 const KIND_TINYSDF: u32 = 1;
 const KIND_MSDF: u32 = 2;
+const KIND_RGBA: u32 = 3;
+
+/// 快判定彩色 emoji(0015 §7.3):码点区间谓词,O(码点数),不栅格。命中主力 emoji plane +
+/// VS16/ZWJ/旗帜;**故意不收** ★(U+2605)/▲(U+25B2)/•(U+2022) 等无默认 emoji 呈现的符号
+/// (它们留单色 SDF + 文字色 tint)。v1 缺口:U+2600–26FF 区少数默认彩 emoji 漏判 → 回退单色。
+fn is_color_emoji(cluster: &str) -> bool {
+    cluster.chars().any(|c| {
+        let u = c as u32;
+        u == 0xFE0F // VS16:显式 emoji 呈现
+            || u == 0x200D // ZWJ:emoji 连写序列
+            || (0x1F000..=0x1FAFF).contains(&u) // 象形/表情/符号扩展 plane(主力)
+            || (0x1F1E6..=0x1F1FF).contains(&u) // 区域指示符(旗帜)
+    })
+}
 
 /// 源解析结果(0015 §2.2):决定该字走哪条路。
 enum Source {
@@ -160,6 +174,10 @@ impl GpuSink {
 
     /// 解析某字形的源(0015 §2.2 源解析器 + 回退链)。
     fn resolve(&self, cluster: &str) -> Source {
+        // 彩色 emoji → RGBA 动态图集(0015 §7):不进 MSDF/单色路,直采真彩。
+        if is_color_emoji(cluster) {
+            return Source::Raster(KIND_RGBA);
+        }
         // MSDF 仅对单 codepoint 簇命中(BMFont 按码点烘);多码点簇(emoji ZWJ 等)不走 MSDF。
         let want_msdf = matches!(self.glyph_mode, GlyphMode::Auto | GlyphMode::ForceMsdf)
             && self.backend.msdf_loaded();
@@ -307,7 +325,9 @@ impl RenderSink for GpuSink {
                 params.push(p.header_ratio);
                 params.push(p.col_ratios.len() as f32);
                 params.push(p.row_ratios.len() as f32);
-                params.extend_from_slice(&p.col_ratios);
+                params.extend_from_slice(&p.ao_color); // [17..20]
+                params.push(p.ao_width); // [20]
+                params.extend_from_slice(&p.col_ratios); // [21..21+n_cols]
                 params.extend_from_slice(&p.row_ratios);
                 infinite_chat_render::PanelInstance {
                     pos: p.pos,
@@ -416,6 +436,54 @@ impl ChatCanvas {
             app.engine
                 .sink_mut()
                 .set_glyph_mode(GlyphMode::from_u32(mode));
+        }
+    }
+
+    /// 平移画布 `dx,dy` 屏幕像素(web 层 wheel/拖拽统一调用,Plan 6)。dy>0 看更新内容,
+    /// dx>0 看右侧(宽表溢出)。横向自由、纵向锚底由 core 处理。
+    pub fn pan_by(&self, dx: f32, dy: f32) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.pan_by(dx, dy);
+        }
+    }
+
+    /// 围绕屏幕点 `(sx,sy)`(设备像素)缩放 `factor`(web 层 ctrl+wheel/捏合调用)。factor>1 放大。
+    pub fn zoom_at(&self, factor: f32, sx: f32, sy: f32) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.zoom_by(factor, sx, sy);
+        }
+    }
+
+    /// 设表格面板渲染样式(web 层 style 面板实时调;Plan 6 / 0018)。**无需重排/reload**:
+    /// `block_decorations` 每帧读 → 下一帧即生效。`cfg` 为对象,字段缺省则保留默认:
+    /// `{ lineColor:[r,g,b,a], headerFill:[r,g,b,a], aoColor:[r,g,b], lineW, ao, aoWidth, radius }`
+    /// (颜色分量 0..1)。
+    #[allow(clippy::needless_pass_by_value)] // reason: wasm_bindgen 按值接收 JsValue
+    pub fn set_table_style(&self, cfg: JsValue) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            let mut s = TableStyle::default();
+            if let Some(c) = get_f32_arr(&cfg, "lineColor", 4) {
+                s.line_color = [c[0], c[1], c[2], c[3]];
+            }
+            if let Some(c) = get_f32_arr(&cfg, "headerFill", 4) {
+                s.header_fill = [c[0], c[1], c[2], c[3]];
+            }
+            if let Some(c) = get_f32_arr(&cfg, "aoColor", 3) {
+                s.ao_color = [c[0], c[1], c[2]];
+            }
+            if let Some(n) = get_f32(&cfg, "lineW") {
+                s.line_w = n;
+            }
+            if let Some(n) = get_f32(&cfg, "ao") {
+                s.ao = n;
+            }
+            if let Some(n) = get_f32(&cfg, "aoWidth") {
+                s.ao_width = n;
+            }
+            if let Some(n) = get_f32(&cfg, "radius") {
+                s.radius = n;
+            }
+            app.engine.set_table_style(s);
         }
     }
 
@@ -655,26 +723,8 @@ async fn init_and_run(
         request_animation_frame(cb);
     }
 
-    // 滚轮 → 滚动(Phase G)。挂在 canvas 上(元素级 wheel 默认非 passive),preventDefault
-    // 能阻止页面滚动。deltaY 为设备无关像素,直接喂 scroll_by(world unit = 设备 px,见缩放)。
-    let state_w = state.clone();
-    let on_wheel = Closure::wrap(Box::new(move |e: web_sys::WheelEvent| {
-        e.prevent_default();
-        let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
-        if let Some(app) = state_w.borrow_mut().as_mut() {
-            if e.ctrl_key() {
-                // ctrl+滚轮 = 围绕指针缩放(Plan 3 L)。
-                let factor = if e.delta_y() < 0.0 { 1.1 } else { 1.0 / 1.1 };
-                let sx = (f64::from(e.offset_x()) * dpr) as f32;
-                let sy = (f64::from(e.offset_y()) * dpr) as f32;
-                app.engine.zoom_by(factor, sx, sy);
-            } else {
-                app.engine.scroll_by((e.delta_y() * dpr) as f32);
-            }
-        }
-    }) as Box<dyn FnMut(web_sys::WheelEvent)>);
-    let _ = canvas.add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref());
-    on_wheel.forget();
+    // 画布输入(滚轮/触摸板/拖拽)移到 web 层(TS `input.ts`),经 `ChatCanvas.pan_by/zoom_at` 调入,
+    // 便于不重编 wasm 调手感(Plan 6)。此处只保留窗口级 resize。
 
     // 窗口尺寸变化:重设后备缓冲(设备像素)→ 重配 surface + 更新排版宽度。
     let canvas_r = canvas.clone();
@@ -733,6 +783,25 @@ fn get_str(config: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(config, &JsValue::from_str(key))
         .ok()?
         .as_string()
+}
+
+/// 读对象字段为 f32(数值);缺省/非数值 → None(set_table_style 用)。
+fn get_f32(obj: &JsValue, key: &str) -> Option<f32> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .ok()?
+        .as_f64()
+        .map(|n| n as f32)
+}
+
+/// 读对象字段为定长 f32 数组(颜色分量);长度不足/非数组 → None(set_table_style 用)。
+fn get_f32_arr(obj: &JsValue, key: &str, n: usize) -> Option<Vec<f32>> {
+    let v = js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok()?;
+    let arr = v.dyn_into::<js_sys::Array>().ok()?;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        out.push(arr.get(i as u32).as_f64()? as f32);
+    }
+    Some(out)
 }
 
 /// 解析 `config.replay`(Plan 5D):`[{ t: number, raw: string }]` → `Vec<Record>`。缺省/空 → None。

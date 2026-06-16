@@ -5,7 +5,9 @@
 //! 供像素两趟对齐 + 格内折行);JS 返回平铺 `Float32Array` `[x,y,w,h]*N`(每 grapheme 一组,
 //! CR4 零拷贝)。glyph 顺序须与输入 grapheme 严格 1:1。
 
-use infinite_chat_core::{LayoutEngine, LayoutResult, PlacedGlyph, StyledSpan, TableRegion};
+use infinite_chat_core::{
+    LayoutEngine, LayoutResult, PlacedGlyph, StyledSpan, TablePanel, TableRegion,
+};
 use js_sys::{Array, Float32Array, Object, Reflect, Uint32Array};
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -75,13 +77,13 @@ impl LayoutEngine for LayoutBridge {
         args.push(&tables_to_js(tables));
         let ret = self.layout_fn.apply(&JsValue::NULL, &args);
 
-        // 返回:`Float32Array`(仅位置)或 `{ positions: Float32Array, cols: Float32Array }`
-        //(带表格列竖线 x,0018 #5)。两形态都接,后者多取 `cols`。
+        // 返回:`Float32Array`(仅位置)或 `{ positions: Float32Array, tables: Float32Array }`
+        //(带各表格面板几何,0018 #5)。两形态都接,后者多取 `tables`。
         let Ok(ret) = ret else {
             tracing::warn!(target: "M7", "layout 调用失败");
             return LayoutResult::default();
         };
-        let (positions, table_cols) = parse_layout_ret(&ret);
+        let (positions, table_panels) = parse_layout_ret(&ret);
         let Some(positions) = positions else {
             tracing::warn!(target: "M7", "layout 返回缺 positions");
             return LayoutResult::default();
@@ -100,23 +102,57 @@ impl LayoutEngine for LayoutBridge {
         LayoutResult {
             glyphs,
             block_height,
-            table_cols,
+            table_panels,
         }
     }
 }
 
-/// 解析 layout 返回:`Float32Array` → (positions, 无列);否则取对象 `positions`/`cols`(0018 #5)。
-fn parse_layout_ret(ret: &JsValue) -> (Option<Float32Array>, Vec<f32>) {
+/// 解析 layout 返回:`Float32Array` → (positions, 无表);否则取对象 `positions` + 扁平 `tables`。
+/// `tables` 编码(每表连续):`[x, y, w, h, header_bottom, n_cols, n_rows, cols…, rows…]`(0018 #5)。
+fn parse_layout_ret(ret: &JsValue) -> (Option<Float32Array>, Vec<TablePanel>) {
     if let Ok(fa) = ret.clone().dyn_into::<Float32Array>() {
         return (Some(fa), Vec::new());
     }
     let positions = Reflect::get(ret, &JsValue::from_str("positions"))
         .ok()
         .and_then(|p| p.dyn_into::<Float32Array>().ok());
-    let cols = Reflect::get(ret, &JsValue::from_str("cols"))
+    let tables = Reflect::get(ret, &JsValue::from_str("tables"))
         .ok()
-        .and_then(|c| c.dyn_into::<Float32Array>().ok())
-        .map(|c| c.to_vec())
+        .and_then(|t| t.dyn_into::<Float32Array>().ok())
+        .map(|t| decode_table_panels(&t.to_vec()))
         .unwrap_or_default();
-    (positions, cols)
+    (positions, tables)
+}
+
+/// 解码扁平表格面板编码(见 [`parse_layout_ret`])→ `Vec<TablePanel>`。越界/不足即停(稳健)。
+fn decode_table_panels(flat: &[f32]) -> Vec<TablePanel> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 7 <= flat.len() {
+        let x = flat[i];
+        let y = flat[i + 1];
+        let w = flat[i + 2];
+        let h = flat[i + 3];
+        let header_bottom = flat[i + 4];
+        let n_cols = flat[i + 5].max(0.0) as usize;
+        let n_rows = flat[i + 6].max(0.0) as usize;
+        i += 7;
+        if i + n_cols + n_rows > flat.len() {
+            break; // 数据不足 → 丢弃残块
+        }
+        let cols = flat[i..i + n_cols].to_vec();
+        i += n_cols;
+        let rows = flat[i..i + n_rows].to_vec();
+        i += n_rows;
+        out.push(TablePanel {
+            x,
+            y,
+            w,
+            h,
+            header_bottom,
+            cols,
+            rows,
+        });
+    }
+    out
 }

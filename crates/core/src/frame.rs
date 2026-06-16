@@ -66,6 +66,10 @@ pub struct FramePanel {
     pub line_w: f32,
     /// AO 强度(0=无)。
     pub ao: f32,
+    /// AO 颜色 RGB(暗色主题取白 → 向内辉光;`PANEL_AO` 时用)。
+    pub ao_color: [f32; 3],
+    /// AO 向内淡出宽度(px)。
+    pub ao_width: f32,
     /// 表头底高占框高比例(0..1;0 = 无表头底)。
     pub header_ratio: f32,
     /// 竖网格线 x(占框宽比例 0..1)。

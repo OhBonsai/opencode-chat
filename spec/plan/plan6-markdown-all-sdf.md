@@ -48,7 +48,8 @@
 
 **任务**
 
-- [x] **网格参数同源 `colX/rowY`**:`placeTable` 算列边界 → `layout()` 返回 `{positions, cols}` → wasm bridge `parse_layout_ret` 解析 → `LayoutResult.table_cols` → `BlockCache.table_cols` → `block_decorations` 归一化成 `col_ratios`(对框宽)+ 行顶归一化 `row_ratios`。字与框同源 colX → #5 竖线对齐。
+- [x] **网格参数同源 `colX/rowY`(逐表)**:`placeTable` 直接给出**整表面板几何** `{x,y,w,h,headerBottom,cols,rows}`(块内相对 px)→ `layout()` 收集**每个**表格(同块多表不再只取首个)→ 扁平 `tables` Float32Array → wasm `decode_table_panels` → `LayoutResult.table_panels` → `BlockCache.table_panels` → `block_decorations` **逐表**产一个 `FramePanel`(归一化 col/row/header_ratio)。字与框同源 colX → #5 竖线精确对齐。
+  - **修(2026-06-16):同块多表合并 bug**。原实现从 glyph AABB 反推几何 + 把同块多表(如 `c06-all` 5 表共一 part)合并成一个巨框:行线跨满最宽表、仅首表头着色、竖线用首表列宽套全表 → 错位。改为 layout 逐表给精确几何、逐表一个面板。
 - [x] **fragment 网格 + 表头底 + 圆角外框**:panel.wgsl `PANEL_GRID` 走 colRatios/rowRatios 画线,`header_ratio` 填表头底。
 - [x] **AO**:`PANEL_AO` 到边距离内阴影(自写)。
 - [x] **删表格 FrameRect**:`block_decorations` 表格分支改产 1 个 `FramePanel`(border + header + 行线 + 列线 + AO),去掉旧的 N 条 FrameRect + "竖线暂不画"的 #5 妥协注释。

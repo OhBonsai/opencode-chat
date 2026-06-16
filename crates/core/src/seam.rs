@@ -69,11 +69,30 @@ pub struct PlacedGlyph {
     pub size: [f32; 2],
 }
 
-/// 排版结果(layout→app),平铺位置 + 块高度 + 表格列竖线位置。
+/// 一个表格的面板几何(layout→app,0018 #5):layout 已知精确网格,直接给出**整表**的盒子 +
+/// 内部竖/横网格线 + 表头底(均为块内相对 px,同源 colX/rowY,plan5 §5F)。一个块内每个表格一份
+/// → app 逐表收敛成一个 SDF 面板(`block_decorations` 不再从 glyph AABB 反推/合并)。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TablePanel {
+    /// 整表盒子左上角(块内相对 px)。
+    pub x: f32,
+    pub y: f32,
+    /// 整表盒子宽高(px)。
+    pub w: f32,
+    pub h: f32,
+    /// 表头底 y(块内相对 px;= 首数据行顶)。`<= y` 表示无表头。
+    pub header_bottom: f32,
+    /// 内部竖网格线 x(块内相对 px,gap 中心)。
+    pub cols: Vec<f32>,
+    /// 内部横网格线 y(块内相对 px,各数据行顶)。
+    pub rows: Vec<f32>,
+}
+
+/// 排版结果(layout→app),平铺位置 + 块高度 + 各表格面板几何。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutResult {
     pub glyphs: Vec<PlacedGlyph>,
     pub block_height: f32,
-    /// 表格列竖线的块内相对 x(px,同源 colX,plan5 §5F → 0018 #5)。非表格块为空;JS 回传。
-    pub table_cols: Vec<f32>,
+    /// 该块内每个表格的面板几何(0018 #5,JS 回传);非表格块为空。
+    pub table_panels: Vec<TablePanel>,
 }

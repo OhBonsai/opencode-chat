@@ -43,6 +43,7 @@ fn block_decorations(
     cache: &BlockCache,
     top: f32,
     max_width: f32,
+    ts: &TableStyle,
     out: &mut Vec<FrameRect>,
     panels: &mut Vec<FramePanel>,
 ) {
@@ -53,17 +54,8 @@ fn block_decorations(
     let rule = StyleRole::Rule.as_u32();
     let h1 = StyleRole::Heading.as_u32();
     let h2 = StyleRole::Heading2.as_u32();
-    let tcell = StyleRole::TableCell.as_u32();
-    let theader = StyleRole::TableHeader.as_u32();
-    let tstrong = StyleRole::TableStrong.as_u32();
-    let tem = StyleRole::TableEm.as_u32();
-    let tsep = StyleRole::TableSep.as_u32();
     let (mut cy0, mut cy1) = (f32::MAX, f32::MIN);
     let (mut qy0, mut qy1) = (f32::MAX, f32::MIN);
-    let (mut ty0, mut ty1) = (f32::MAX, f32::MIN); // 整表 y 范围
-    let (mut tx0, mut tx1) = (f32::MAX, f32::MIN); // 整表 x 范围(外框)
-    let mut row_ys: Vec<f32> = Vec::new(); // 各行顶 y(行横线)
-    let (mut has_header, mut has_table) = (false, false);
     let (mut has_code, mut has_quote, mut has_head_rule) = (false, false, false);
     let mut alert_label = String::new(); // 非空 = 该块是 Alert
                                          // 行内码 chip:同一行连续 Code 角色聚成一个圆角底,逐行 flush。
@@ -91,18 +83,6 @@ fn block_decorations(
         }
         if r == h1 || r == h2 {
             has_head_rule = true;
-        }
-        // 表格(0014 A / 5E.1 #5):收 y/x 范围、列分隔符 x、各行顶 y → 派生网格。
-        if r == theader {
-            has_header = true;
-        }
-        if r == theader || r == tcell || r == tstrong || r == tem || r == tsep {
-            has_table = true;
-            ty0 = ty0.min(y0);
-            ty1 = ty1.max(y1);
-            tx0 = tx0.min(x0);
-            tx1 = tx1.max(x1);
-            row_ys.push(y0);
         }
         // 分隔线:零墨 Rule 锚点 → 整宽细线(居其行垂直中点)。
         if r == rule {
@@ -151,50 +131,40 @@ fn block_decorations(
             stroke: 0.0,
         });
     }
-    if has_table {
+    // 表格(0018 #5):layout 已按表给出精确网格几何(box/cols/rows/header_bottom,块内相对 px)。
+    // **逐表**收敛成一个 SDF 面板(圆角外框 + 表头底 + 横线/竖线网格 + AO),不再从 glyph AABB
+    // 反推或把同块多表合并成一个巨框。比例 = 网格线相对(加内边距的)框的占比,`top` 在 x/y 比例里
+    // 抵消,只用于面板世界 pos.y。
+    for t in &cache.table_panels {
         let pad = 4.0; // 内容到边框的留白
-        let (gx0, gy0) = (tx0 - pad, ty0 - pad);
-        let (gw, gh) = ((tx1 - tx0) + 2.0 * pad, (ty1 - ty0) + 2.0 * pad);
-        // 各行顶去重排序(表头底界 + 行横线都用)。
-        row_ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut tops: Vec<f32> = Vec::new();
-        for &y in &row_ys {
-            if tops.last().is_none_or(|&p| (y - p).abs() >= 2.0) {
-                tops.push(y);
-            }
-        }
-        // 0014 B 像素两趟已让列对齐 → 整表收敛成**一个 SDF 面板**(0018 §6):圆角外框 + 表头底 +
-        // 横线(行)+ 竖线(列,来自 `cache.col_ratios`,同源 colX)+ AO。替代旧的 N 条 FrameRect。
-        let header_ratio = if has_header && gh > 0.0 {
-            let header_bottom = tops.get(1).copied().unwrap_or(ty1 + pad);
-            ((header_bottom - gy0) / gh).clamp(0.0, 1.0)
+        let gw = (t.w + 2.0 * pad).max(1.0);
+        let gh = (t.h + 2.0 * pad).max(1.0);
+        let col_ratios: Vec<f32> = t
+            .cols
+            .iter()
+            .map(|&x| ((x - t.x + pad) / gw).clamp(0.0, 1.0))
+            .collect();
+        let row_ratios: Vec<f32> = t
+            .rows
+            .iter()
+            .map(|&y| ((y - t.y + pad) / gh).clamp(0.0, 1.0))
+            .collect();
+        let header_ratio = if t.header_bottom > t.y {
+            ((t.header_bottom - t.y + pad) / gh).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let row_ratios: Vec<f32> = if gh > 0.0 {
-            tops.iter()
-                .skip(1)
-                .map(|&y| ((y - gy0) / gh).clamp(0.0, 1.0))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // 列竖线:块内 colX(px)→ 框相对占比(同源 → #5 连续竖线对齐;无 colX 时空 = 暂无竖线)。
-        let col_ratios: Vec<f32> = cache
-            .table_cols
-            .iter()
-            .map(|&x| ((x - gx0) / gw).clamp(0.0, 1.0))
-            .filter(|&r| r > 0.001 && r < 0.999)
-            .collect();
         panels.push(FramePanel {
-            pos: [gx0, gy0],
+            pos: [t.x - pad, t.y + top - pad],
             size: [gw, gh],
-            radius: 4.0,
+            radius: ts.radius,
             fill: [0.0, 0.0, 0.0, 0.0],
-            line_color: theme::TABLE_RULE,
-            header_fill: theme::TABLE_HEADER_BG,
-            line_w: 1.0,
-            ao: 0.10,
+            line_color: ts.line_color,
+            header_fill: ts.header_fill,
+            line_w: ts.line_w,
+            ao: ts.ao,
+            ao_color: ts.ao_color,
+            ao_width: ts.ao_width,
             header_ratio,
             col_ratios,
             row_ratios,
@@ -245,8 +215,8 @@ struct BlockCache {
     placed: Vec<PlacedGlyph>,
     /// 块高度。
     height: f32,
-    /// 表格列竖线的块内相对 x(px,同源 colX,plan5 §5F → 0018 #5);非表格块为空。
-    table_cols: Vec<f32>,
+    /// 块内每个表格的面板几何(box + 竖/横网格 + 表头底,块内相对 px;0018 #5);非表格块为空。
+    table_panels: Vec<crate::TablePanel>,
 }
 
 /// 每个可见 part 的上屏进度 + 排版缓存。
@@ -274,6 +244,40 @@ pub struct FrameStats {
 }
 
 /// 每帧编排引擎。`C` 事件源、`L` 排版、`R` 渲染汇均经 seam 注入(CR2)。
+/// 表格面板的可调渲染样式(0018 / Plan 6;web 层 style 面板实时改)。默认 = theme 常量。
+/// `block_decorations` **每帧**读它产 `FramePanel` → setter 改完下一帧即生效(无需重排/reload)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TableStyle {
+    /// 网格线 / 外框色 RGBA。
+    pub line_color: [f32; 4],
+    /// 表头底色 RGBA。
+    pub header_fill: [f32; 4],
+    /// 网格线宽(px)。
+    pub line_w: f32,
+    /// AO 强度(0=无)。
+    pub ao: f32,
+    /// AO 颜色 RGB(暗色主题取白 → 向内辉光)。
+    pub ao_color: [f32; 3],
+    /// AO 向内淡出宽度(px)。
+    pub ao_width: f32,
+    /// 圆角半径(px)。
+    pub radius: f32,
+}
+
+impl Default for TableStyle {
+    fn default() -> Self {
+        Self {
+            line_color: theme::TABLE_RULE,
+            header_fill: theme::TABLE_HEADER_BG,
+            line_w: 1.0,
+            ao: 0.12,
+            ao_color: [1.0, 1.0, 1.0],
+            ao_width: 10.0,
+            radius: 4.0,
+        }
+    }
+}
+
 pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     conn: C,
     layout: L,
@@ -297,6 +301,8 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     turn: TurnTracker,
     /// 上一帧渲染统计(可观测)。
     last_stats: FrameStats,
+    /// 表格面板可调渲染样式(web 层实时改;每帧读,见 [`TableStyle`])。
+    table_style: TableStyle,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -318,6 +324,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             debug_geometry: false,
             turn: TurnTracker::new(),
             last_stats: FrameStats::default(),
+            table_style: TableStyle::default(),
         }
     }
 
@@ -350,6 +357,15 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
     }
 
+    /// 二维平移 `dx,dy` 屏幕像素(触摸板两指滚动 / 拖拽;web 层输入统一入口)。横向自由平移(宽表
+    /// 溢出可拖看),纵向同 `scroll_by`。任意横移或上移即脱离锚底,滚回底部时 `build_frame` 复跟随。
+    pub fn pan_by(&mut self, dx: f32, dy: f32) {
+        self.camera.pan_by_screen(dx, dy);
+        if dx != 0.0 || dy < 0.0 {
+            self.stick_to_bottom = false;
+        }
+    }
+
     /// 围绕屏幕点缩放(Plan 3 L:ctrl+滚轮 / 双指)。缩放即脱离锚底。
     pub fn zoom_by(&mut self, factor: f32, screen_x: f32, screen_y: f32) {
         self.camera.zoom_at(factor, screen_x, screen_y);
@@ -359,6 +375,12 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// 只读相机(供宿主/测试)。
     pub fn camera(&self) -> &Camera2D {
         &self.camera
+    }
+
+    /// 设表格面板渲染样式(web 层 style 面板调用)。**无需重排**:`block_decorations` 每帧读它,
+    /// 下一帧即生效。
+    pub fn set_table_style(&mut self, s: TableStyle) {
+        self.table_style = s;
     }
 
     /// 设过滤目标 session(`?session=`);None 全渲染。
@@ -595,8 +617,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 roles,
                 placed: result.glyphs,
                 height: result.block_height,
-                // 列竖线 x(同源 colX,0018 #5):layout 回传后填;暂空 = 面板不画竖线。
-                table_cols: result.table_cols.clone(),
+                // 各表格面板几何(同源 colX/rowY,0018 #5):layout 回传,逐表收敛成一个 SDF 面板。
+                table_panels: result.table_panels,
             });
         }
     }
@@ -659,7 +681,14 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             if !Rect::new(0.0, block_top, self.max_width, block_h).intersects(&visible) {
                 continue; // narrow phase:实际矩形不相交 → 裁掉
             }
-            block_decorations(cache, block_top, self.max_width, &mut rects, &mut panels); // 4B/6 装饰
+            block_decorations(
+                cache,
+                block_top,
+                self.max_width,
+                &self.table_style,
+                &mut rects,
+                &mut panels,
+            ); // 4B/6 装饰
             let glyphs_before = glyphs.len();
             let last_spawn = view.revealed.len().saturating_sub(1);
             for (j, placed) in cache.placed.iter().enumerate() {

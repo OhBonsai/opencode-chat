@@ -6,9 +6,10 @@
 // 参数块(f32,自 param_offset 起):
 //   [0..4]  fill rgba   [4..8] line rgba   [8..12] header rgba
 //   [12] line_w(px)  [13] ao_strength  [14] header_ratio(0..1)  [15] n_cols  [16] n_rows
-//   [17 .. 17+n_cols]            col_ratios(0..1)
-//   [17+n_cols .. +n_rows]       row_ratios(0..1)
-// flags:bit0=grid,bit1=ao。
+//   [17..20] ao_color rgb   [20] ao_width(px,AO 向内淡出距离)
+//   [21 .. 21+n_cols]            col_ratios(0..1)
+//   [21+n_cols .. +n_rows]       row_ratios(0..1)
+// flags:bit0=grid,bit1=ao。线宽/线色/AO 色/AO 宽/AO 强度均为参数(暗色主题 AO 取白,做向内辉光)。
 
 struct Globals {
     viewport: vec2<f32>,
@@ -83,6 +84,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let header_ratio = params[base + 14u];
     let n_cols = u32(params[base + 15u]);
     let n_rows = u32(params[base + 16u]);
+    let ao_color = vec3<f32>(params[base + 17u], params[base + 18u], params[base + 19u]);
+    let ao_width = params[base + 20u];
 
     // 外框覆盖率(圆角 SDF + fwidth AA)。
     let d = sd_round_box(in.local, in.halfsz, in.radius);
@@ -107,22 +110,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let h = in.halfsz.y * 2.0;
         var dmin = 1.0e9;
         for (var c = 0u; c < n_cols; c = c + 1u) {
-            let lx = params[base + 17u + c] * w;
+            let lx = params[base + 21u + c] * w;
             dmin = min(dmin, abs(in.local.x + in.halfsz.x - lx));
         }
         for (var r = 0u; r < n_rows; r = r + 1u) {
-            let ly = params[base + 17u + n_cols + r] * h;
+            let ly = params[base + 21u + n_cols + r] * h;
             dmin = min(dmin, abs(in.local.y + in.halfsz.y - ly));
         }
         let g = 1.0 - smoothstep(0.0, max(line_w, 0.5), dmin);
         col = vec4<f32>(mix(col.rgb, line.rgb, g * line.a), max(col.a, g * line.a));
     }
 
-    // AO:近外框内阴影(自写,借 NX23DV 手法:用到边距离 darken)。
+    // AO:沿内边的辉光(暗色主题取白色 ao_color)。`-d` 在边=0、向内增大;ao_width 内淡出。
+    // 用 mix 向 ao_color 靠 + 抬 alpha,使透明填充上也可见(旧版乘法压暗在透明/暗底上不可见)。
     if (in.flags & 2u) != 0u && ao_strength > 0.0 {
-        let edge = clamp(-d / max(8.0, line_w * 4.0), 0.0, 1.0); // 0 在边、1 在内
-        let ao = mix(1.0 - ao_strength, 1.0, edge);
-        col = vec4<f32>(col.rgb * ao, col.a);
+        let t = clamp(-d / max(ao_width, 1.0), 0.0, 1.0); // 0 在边、1 在内 ao_width 处
+        let glow = (1.0 - t) * ao_strength;               // 边缘最亮、向内淡出
+        col = vec4<f32>(mix(col.rgb, ao_color, glow), max(col.a, glow));
     }
 
     // 外框描边(圆角边一圈)。

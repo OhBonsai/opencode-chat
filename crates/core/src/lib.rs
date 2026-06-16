@@ -25,7 +25,7 @@ mod store;
 mod support;
 mod theme;
 
-pub use app::{Engine, FrameStats};
+pub use app::{Engine, FrameStats, TableStyle};
 pub use camera::{Camera2D, Rect};
 pub use content::{
     parse_markdown, parse_markdown_tables, plain, StyleRole, StyledSpan, TableRegion,
@@ -36,7 +36,9 @@ pub use protocol::{
     decode, parse_snapshot, Envelope, Event, Part, ProtocolError, SnapshotMessage, TextPartData,
 };
 pub use record::{Player, Record, Recorder};
-pub use seam::{Clock, Connection, LayoutEngine, LayoutResult, PlacedGlyph, RawEvent, RenderSink};
+pub use seam::{
+    Clock, Connection, LayoutEngine, LayoutResult, PlacedGlyph, RawEvent, RenderSink, TablePanel,
+};
 pub use smoother::{Revealed, Smoother};
 pub use spatial::SpatialGrid;
 pub use store::Store;
