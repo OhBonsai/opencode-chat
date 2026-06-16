@@ -103,6 +103,49 @@ resolve(glyph, mode):
 - 烘集命中率太低(大量回退到软 TinySDF)→ 扩充烘集 / 改运行时 MSDF(fdsm + LXGW .ttf,0013)。
 - 不想打包 LXGW(回到小包体优先)→ 退回"系统字体 + TinySDF",放弃 MSDF 锐度(0009/0011 原路)。
 
+## 7. 彩色 emoji 落地 + 特殊字符路由(2026-06-16)
+
+§2 设计里 `RGBA(kind=3)` 一直是"占位":动态图集是 R8、shader `case 3` 是桩、栅格器只取 alpha → **彩色 emoji 拿不到颜色,MSDF 模式下还直接消失**(ForceMSDF 留空洞)。本节定彩字落地 + 把"类图标 Unicode"分流说清。
+
+### 7.1 三类"特殊/类图标字符"的归宿(策略)
+
+1. **markdown 自身的结构标记**(列表 `•`/序号、引用符等)→ **改画成 SDF 形状图元**(走 [0018](0018-sdf-panel-decoration-primitive.md) 面板/形状,跟随文字色、任意缩放锐利),**不走字体字形**。属内容层决定(由 role 派生),不进字形管线。**留作 list 渲染时做**(本 ADR 不实现)。
+2. **彩色 emoji**(🏆🎯🥇,Emoji_Presentation / ZWJ / 旗帜)→ **RGBA 彩色路**(§7.2)。
+3. **其余单色符号 + 生僻 CJK**(▲ ● ★ • 巅…)→ 现有 **SDF 链**:MSDF 命中用 baked,否则 **Auto 模式回退 TinySDF**(运行时栅格,单色 + 文字色 tint,本就正确)。**注:ForceMSDF 是调试模式,故意留空洞看覆盖率;Auto(默认)早已回退,不会消失。**
+
+### 7.2 彩色 emoji = 动态图集升 RGBA8(最小改面)
+
+不另起图集/绑定:**把现有动态图集 `SdfAtlas` 的纹理格式 R8 → RGBA8**,emoji 复用现成 `Source::Raster` 路(kind=3):
+
+- **栅格器**(`glyph-raster.ts`)统一返回 `TILE²×4` RGBA:kind 0/1 把覆盖率/SDF 值塞进 `.r`(`[v,v,v,255]`,shader 仍读 `.r`);**kind 3 直接返回 canvas 的彩色 `getImageData`**(emoji 字体本就彩,`fillStyle` 无关)。
+- **图集**:`SdfAtlas` 纹理 `Rgba8Unorm`、`upload` 字节数 ×4、`bytes_per_row = TILE_PX*4`。绑定层不变(`texture_2d_array<f32>` 对 R8/RGBA8 通吃);内存上限 8MB→32MB(动态页小,可接受)。
+- **shader**(`glyph.wgsl`)`case 3u` → `vec4(r8.rgb, r8.a * in.alpha)`(直采彩色,fade 走 alpha;ALPHA_BLENDING 直 alpha 合成)。kind 0/1/2 不变(读 `.r` / median)。
+- **路由**:`GpuSink::resolve` 开头加 `if is_color_emoji(cluster) { return Raster(KIND_RGBA) }`(emoji 不进 MSDF)。逐源统计 `src_counts[3]` 已留位。
+- **不新增**:无新绑定/新图集结构/新管线;`Source` 枚举不变(emoji = `Raster(3)`)。
+
+### 7.3 快判定(省性能,不栅格)
+
+emoji 判定走 **Rust 码点区间谓词**(在 `resolve` 热路径,O(码点数),**不先栅格再验色**):
+```
+is_color_emoji(cluster):
+  对每个 scalar c:
+    c == U+FE0F(VS16)        → true   # 显式 emoji 呈现
+    c == U+200D(ZWJ)         → true   # emoji 连写序列
+    U+1F000..=U+1FAFF 含 c    → true   # 象形/表情/符号扩展 plane(主力)
+    U+1F1E6..=U+1F1FF 含 c    → true   # 区域指示符(旗帜)
+  否则 false
+```
+- 覆盖主力 emoji + VS16/ZWJ/旗帜;**故意不收 ★(U+2605)/▲(U+25B2)/•(U+2022)**——它们无默认 emoji 呈现,留单色 SDF + 文字色 tint(否则会被当 RGBA 输出成灰、丢 tint)。
+- **v1 缺口**:U+2600–26FF 区里少数默认彩 emoji(⛄⌚☔ 等)本谓词漏判 → 回退单色;需要再按 Emoji_Presentation 精确表补,代价是带张属性表。当前内容(🏆🎯🥇)全在 1F3xx,命中。
+
+### 7.4 落地(2026-06-16)
+
+- [x] `atlas.rs` `SdfAtlas` → `Rgba8Unorm` + upload ×4 / `bytes_per_row*4`。
+- [x] `glyph.wgsl` `case 3u` 直采彩色。
+- [x] `glyph-raster.ts` 统一返回 RGBA(emoji 彩、其余 splat `.r`)。
+- [x] `lib.rs` `KIND_RGBA` + `is_color_emoji` + `resolve` emoji 分支。
+- [ ] (留)markdown 结构标记 → SDF 形状(§7.1.1,list 渲染时做);U+2600 块彩 emoji 精确表(§7.3 缺口)。
+
 ## 6. 来源 / 链接
 
 - 字体:`lxgw-wenkai-v1.522/LXGWWenKaiMono-Light.ttf`(OFL)

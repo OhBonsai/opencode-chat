@@ -103,9 +103,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let cov_msdf = sdf_coverage(median3(m));
     var cov: f32;
     switch in.kind {
-        case 0u: { cov = r8.r; }              // 位图覆盖率:R8 alpha 直采
+        case 0u: { cov = r8.r; }              // 位图覆盖率:.r 直采
         case 2u: { cov = cov_msdf; }          // MSDF:median 距离场
-        case 3u: { return r8 * in.alpha; }    // RGBA 彩字:直接输出
+        case 3u: { return vec4<f32>(r8.rgb, r8.a * in.alpha); } // RGBA 彩字(emoji):直采真彩,fade 走 alpha(0015 §7.2)
         default: { cov = cov_sdf; }           // TinySDF
     }
     return vec4<f32>(in.tint, cov * in.alpha);

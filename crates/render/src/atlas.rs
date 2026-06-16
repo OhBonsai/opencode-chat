@@ -213,7 +213,9 @@ impl SdfAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm, // 单通道距离场
+            // RGBA8:单色源(位图/TinySDF)把值塞 `.r`(shader 读 `.r`),彩色 emoji(kind=3)存真彩
+            // (0015 §7.2)。绑定层 `texture_2d_array<f32>` 对 R8/RGBA8 通吃,故只改格式 + 上传字节数。
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -267,11 +269,11 @@ impl SdfAtlas {
         self.alloc.alloc(key)
     }
 
-    /// 上传一张 `TILE_PX²` 的 R8 SDF 到指定槽。
+    /// 上传一张 `TILE_PX²` 的 RGBA8 tile 到指定槽(单色源 `.r` splat / 彩色 emoji 真彩,0015 §7.2)。
     pub fn upload(&mut self, queue: &wgpu::Queue, slot: Slot, sdf: &[u8]) {
-        let need = (TILE_PX * TILE_PX) as usize;
+        let need = (TILE_PX * TILE_PX * 4) as usize;
         if sdf.len() < need {
-            tracing::warn!(target: "M8", "SDF tile 尺寸不足({} < {need}),跳过", sdf.len());
+            tracing::warn!(target: "M8", "tile 尺寸不足({} < {need}),跳过", sdf.len());
             return;
         }
         queue.write_texture(
@@ -288,7 +290,7 @@ impl SdfAtlas {
             &sdf[..need],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(TILE_PX), // R8 → 1 字节/像素
+                bytes_per_row: Some(TILE_PX * 4), // RGBA8 → 4 字节/像素
                 rows_per_image: Some(TILE_PX),
             },
             wgpu::Extent3d {

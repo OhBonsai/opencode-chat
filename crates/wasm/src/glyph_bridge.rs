@@ -1,8 +1,8 @@
-//! glyph_bridge(M8)— 调 JS 侧光栅器生成单个 grapheme 的 R8 tile(Plan 3 K / 0015)。
+//! glyph_bridge(M8)— 调 JS 侧光栅器生成单个 grapheme 的 RGBA8 tile(Plan 3 K / 0015 §7.2)。
 //!
 //! JS 契约:`(cluster: string, style: number, kind: number) => Uint8Array`(长度 =
-//! `TILE_PX²` 的 R8 单通道)。`kind`:0=位图覆盖率(alpha)/ 1=TinySDF(距离场,0.5≈边缘)。
-//! 固定 tile 尺寸(源缩放无关)。
+//! `TILE_PX²×4` 的 RGBA8)。`kind`:0=位图覆盖率(值在 .r)/ 1=TinySDF(距离场,值在 .r,0.5≈边缘)/
+//! 3=RGBA 彩色 emoji(真彩)。固定 tile 尺寸(源缩放无关)。
 
 use js_sys::Uint8Array;
 use wasm_bindgen::{JsCast, JsValue};

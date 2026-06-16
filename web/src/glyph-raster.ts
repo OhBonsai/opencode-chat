@@ -59,7 +59,9 @@ function edt(grid: Float64Array, w: number, h: number): void {
   for (let y = 0; y < h; y++) edt1d(grid, y * w, 1, w); // 行
 }
 
-// kind:0=位图覆盖率(直接 alpha,1× 锐、不缩放)/ 1=TinySDF(EDT 距离场)。0015 §2.1 轴 A。
+// kind:0=位图覆盖率(alpha)/ 1=TinySDF(EDT 距离场)/ 3=RGBA 彩色 emoji(0015 §2.1/§7.2)。
+// 统一返回 `TILE²×4` 的 RGBA8(动态图集已升 RGBA8):单色源把值塞 .r(`[v,v,v,255]`,shader 读 .r);
+// emoji 直接返回 canvas 彩色像素。
 export function rasterize(cluster: string, style: number, kind = 1): Uint8Array {
   const c = ctx();
   c.clearRect(0, 0, TILE, TILE);
@@ -70,14 +72,25 @@ export function rasterize(cluster: string, style: number, kind = 1): Uint8Array 
   c.fillStyle = "#ffffff";
   c.fillText(cluster, BUFFER, BUFFER);
 
-  const img = c.getImageData(0, 0, TILE, TILE).data; // RGBA;取 alpha
+  const img = c.getImageData(0, 0, TILE, TILE).data; // RGBA
   const n = TILE * TILE;
 
-  // 位图模式:覆盖率 = alpha 直出(无 EDT),片元直采 r。
+  // kind 3:彩色 emoji —— 直接返回 canvas 的 RGBA(emoji 字体本就彩色,fillStyle 无关)。
+  if (kind === 3) {
+    return new Uint8Array(img); // 拷贝出 Uint8ClampedArray 的字节
+  }
+
+  // 位图模式:覆盖率 = alpha;splat 进 RGBA 的 .r(+ a=255)。
   if (kind === 0) {
-    const cov = new Uint8Array(n);
-    for (let i = 0; i < n; i++) cov[i] = img[i * 4 + 3];
-    return cov;
+    const out = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const a = img[i * 4 + 3];
+      out[i * 4] = a;
+      out[i * 4 + 1] = a;
+      out[i * 4 + 2] = a;
+      out[i * 4 + 3] = 255;
+    }
+    return out;
   }
 
   const outer = new Float64Array(n);
@@ -100,11 +113,15 @@ export function rasterize(cluster: string, style: number, kind = 1): Uint8Array 
   edt(outer, TILE, TILE);
   edt(inner, TILE, TILE);
 
-  const out = new Uint8Array(n);
+  const out = new Uint8Array(n * 4);
   for (let i = 0; i < n; i++) {
     // 有符号距离:外正内负;归一到 0..1,0.5 = 边缘。
     const d = Math.sqrt(outer[i]) - Math.sqrt(inner[i]);
-    out[i] = Math.max(0, Math.min(255, Math.round(255 * (0.5 - d / (2 * RADIUS)))));
+    const v = Math.max(0, Math.min(255, Math.round(255 * (0.5 - d / (2 * RADIUS)))));
+    out[i * 4] = v; // shader 读 .r
+    out[i * 4 + 1] = v;
+    out[i * 4 + 2] = v;
+    out[i * 4 + 3] = 255;
   }
   return out;
 }
