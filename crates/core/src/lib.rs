@@ -19,6 +19,7 @@ mod fsm;
 mod nodes;
 mod protocol;
 mod record;
+mod reveal;
 mod seam;
 mod smoother;
 mod spatial;
@@ -29,7 +30,7 @@ mod theme;
 pub use app::{Engine, FrameStats, TableStyle};
 pub use camera::{Camera2D, Rect};
 pub use content::{
-    parse_markdown, parse_markdown_nodes, plain, StyleRole, StyledSpan, TableRegion,
+    content_gate, parse_markdown, parse_markdown_nodes, plain, StyleRole, StyledSpan, TableRegion,
 };
 pub use frame::{FrameData, FrameGlyph, FramePanel, FrameRect, PANEL_AO, PANEL_GRID};
 pub use fsm::{TurnStatus, TurnTracker};
@@ -38,6 +39,7 @@ pub use protocol::{
     decode, parse_snapshot, Envelope, Event, Part, ProtocolError, SnapshotMessage, TextPartData,
 };
 pub use record::{Player, Record, Recorder};
+pub use reveal::{block_kind, is_structural, layout_gate, RevealUnit};
 pub use seam::{
     Clock, Connection, LayoutEngine, LayoutResult, PlacedGlyph, RawEvent, RenderSink, TablePanel,
 };

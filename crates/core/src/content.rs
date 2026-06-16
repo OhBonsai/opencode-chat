@@ -159,6 +159,59 @@ fn is_pending_table(block: &Block) -> bool {
     any
 }
 
+/// 末块是否「正在成形的结构块」—— 不止表格(0019 §4.2 / 0017 §10:把 [`is_pending_table`]
+/// 泛化到更多会闪 raw 的结构)。命中即 reveal 抑制(hold 整块,不发 raw),待结构确认再揭示:
+/// - **表格**:表头/数据行已到、分隔行 `|---|` 未到([`is_pending_table`])。
+/// - **显示公式** `$$…$$`:开了未闭(奇数个 `$$`)→ 别闪半截 `$$E=mc^2`。
+///
+/// 保守(0019 风险"raw 抑制误伤"):列表 `- ` / 围栏 ``` ``` ``` 由 marker / [`remend`] 闭合已不闪 raw,
+/// 不纳入抑制(否则正常 `- 文本`/代码会被误 hold)。
+fn is_pending_structure(block: &Block) -> bool {
+    if is_pending_table(block) {
+        return true;
+    }
+    // 显示公式半截:段落且整块文本含奇数个 `$$`(开了未闭)。
+    if matches!(block.kind, BlockKind::Paragraph) {
+        let dollars: usize = block
+            .lines
+            .iter()
+            .map(|l| l.plain_text().matches("$$").count())
+            .sum();
+        if !dollars.is_multiple_of(2) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 活动块(末块)内容就绪门(0019 §4.1):该块结构上已完成到哪一级,驱动调度器何时可揭示。
+/// 单调只增(append-only);**泛化** [`is_pending_table`](只答是否成形)为"成形到第几级":
+/// - 段落/标题:逐字 → [`RevealUnit::Glyph`]。
+/// - 列表项:闭合到行 → [`RevealUnit::Line`]。
+/// - 围栏代码:源 ``` ``` ``` 配平(闭合)→ [`RevealUnit::Block`];未闭 → [`RevealUnit::Line`](已到行可逐行)。
+/// - 表格:确认成 `Table` → [`RevealUnit::Row`]`(行数)`;成形中(未确认)由 [`is_pending_structure`] 抑制。
+pub fn content_gate(src: &str) -> crate::reveal::RevealUnit {
+    use crate::reveal::RevealUnit;
+    let patched = remend(&mark_alerts(src));
+    let doc = jcode_parse(&patched);
+    match doc.blocks.last() {
+        None => RevealUnit::Block,
+        Some(b) => match &b.kind {
+            BlockKind::Table => RevealUnit::Row(b.table.len() as u32),
+            // 源里 ``` 配平 = 围栏闭合(remend 只在奇数时补;故偶数=已闭)。
+            BlockKind::CodeBlock { .. } => {
+                if src.matches("```").count().is_multiple_of(2) {
+                    RevealUnit::Block
+                } else {
+                    RevealUnit::Line
+                }
+            }
+            BlockKind::ListItem { .. } => RevealUnit::Line,
+            _ => RevealUnit::Glyph,
+        },
+    }
+}
+
 /// 表格结构(0014 B / plan5 §5F):`rows[r][c]` = 该格在 spans 数组里的 run 区间 `[start, end)`;
 /// `aligns[c]` = 列对齐(0=Left / 1=Center / 2=Right,与 JS 一致)。供 JS 像素两趟布局/格内折行。
 #[derive(Clone, Debug, PartialEq)]
@@ -229,9 +282,9 @@ fn emit_doc(
     let mut specs: Vec<crate::nodes::BlockSpec> = Vec::new();
     let last = doc.blocks.len().wrapping_sub(1);
     for (i, block) in doc.blocks.iter().enumerate() {
-        // reveal 抑制(0017 §10):末块若是"正在成形的表格"则 hold——不发 raw,
-        // 待分隔行到达、pulldown 确认成 Table 后再揭示。避免 `| a | b |` 闪现后 snap。
-        if i == last && is_pending_table(block) {
+        // reveal 抑制(0017 §10 / 0019 §4.2):末块若是"正在成形的结构块"(表格未确认 /
+        // 半截显示公式)则 hold——不发 raw,待结构确认后再揭示。避免 `| a | b |`/`$$x` 闪现后 snap。
+        if i == last && is_pending_structure(block) {
             continue;
         }
         // 0020:块区间从**前导块间 `\n` 之前**起 → 块连续无空洞,分隔符不成 Doc 孤儿(保不变式)。
@@ -815,6 +868,35 @@ mod tests {
         let (_spans, tables, _) = parse_markdown_nodes(md, 0);
         let (s, e) = tables[0].rows[1][1]; // 第 2 行第 2 格 = 空
         assert_eq!(s, e, "空格应是空 run 区间");
+    }
+
+    #[test]
+    fn content_gate_levels_per_block_kind() {
+        use crate::reveal::RevealUnit;
+        // 段落逐字。
+        assert_eq!(content_gate("hello world"), RevealUnit::Glyph);
+        // 围栏:未闭 = Line(已到行逐行),闭合 = Block。
+        assert_eq!(content_gate("```\nlet x = 1;"), RevealUnit::Line);
+        assert_eq!(content_gate("```\nlet x = 1;\n```"), RevealUnit::Block);
+        // 列表项闭合 = Line。
+        assert_eq!(content_gate("- one\n- two"), RevealUnit::Line);
+        // 表格确认成 Table → Row(行数:表头 + 2 数据)。
+        assert_eq!(
+            content_gate("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"),
+            RevealUnit::Row(3)
+        );
+    }
+
+    #[test]
+    fn pending_structure_suppresses_table_and_math() {
+        // 表格成形中(无分隔行)→ 抑制(沿用 is_pending_table)。
+        assert!(render(&parse_markdown("| a | b |")).is_empty());
+        // 半截显示公式 `$$…`(开了未闭)→ 抑制,不闪 raw `$$`。
+        let r = render(&parse_markdown("$$E = mc^2"));
+        assert!(!r.contains("$$"), "半截公式不应闪 raw $$: {r:?}");
+        // 闭合后正常显示(不抑制)。
+        let r2 = render(&parse_markdown("$$E = mc^2$$"));
+        assert!(r2.contains("E = mc"), "闭合公式应显示: {r2}");
     }
 
     #[test]
