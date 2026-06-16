@@ -24,6 +24,8 @@
 
 ### 2.2 排版:pretext(JS 侧),不用 cosmic-text,不用 Rust 重写
 
+> **后续(2026-06-16,[0021](0021-js-rust-boundary-and-configurable-render.md))**:JS/Rust 划界 + 渲染样式数据驱动(shader 不写死颜色)+ **pretext 作为复杂 layout 的预留实现**(`layout-bridge` 契约固定、可热替换,触发器见 0021 §4)统一收口到 0021。
+
 pretext(`infinite-chat/pretext`,纯 TS)负责分段、bidi、换行、富文本 inline 流,以浏览器 `measureText` 为 ground truth,并逐浏览器校准(`accuracy/*.json`)。
 
 选 pretext 的理由:

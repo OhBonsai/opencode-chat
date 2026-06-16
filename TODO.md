@@ -3,6 +3,9 @@
 - **近期可做项已拆出** → [plan4-polish](spec/plan/plan4-polish.md)(排版收口 + markdown 观感 + 基础调试器):含原 M(折行/分级/装饰/表格/令牌/pretext 清理)、调试器 P1 + 数据通道、per-role 度量。
 - **streaming 形变** → [plan5-streaming-markdown](spec/plan/plan5-streaming-markdown.md)(0016 机制 + 0017 落地 + 全 markdown 语法 streaming 规则 + 重放验证 case)。
 - **markdown 全 SDF 化** → [plan6-markdown-all-sdf](spec/plan/plan6-markdown-all-sdf.md)([0018] 落地:零散 FrameRect 装饰 → 一个参数化 SDF 面板图元 + storage buffer + #5 网格/AO/选中,接 0016/0019)。
+- **内容节点身份(scene-graph-lite)** → [0020](spec/decision/0020-content-node-identity-model.md):扁平 `Node` 表(嵌套区间 + parent 下标 + 路径哈希),统一 0016 NodeId / 0014 TableRegion / 0019 Selector;与 tile 分桶正交。**0019 reveal + 0016 节点级 morph 的前置**。
+- **JS/Rust 边界 + 可配置渲染样式** → [0021](spec/decision/0021-js-rust-boundary-and-configurable-render.md):渲染样式全数据驱动(`Palette` 角色配色 + `RenderStyle`,shader 去写死、从 buffer 取)、布局/渲染两条生效路径固化、**pretext 作复杂 layout 预留**(契约固定可热替换)。落地清单见 0021 §8。`TableStyle`(Plan 6)是样板。
+  - **⏳ 排期:待「非表格 markdown 全支持」之后再做**(见下「Plan 5 续 · 非表格 markdown 完备」)。它不阻塞 markdown 语法补全,反而该在语法齐全、节点种类稳定后一次性把 jcode `Document` 拍平时记区间建 `NodeTree`(0020 §9)。在此之前 0016/0014/0019 继续用现有 `(block_seq,glyph_idx)` / `TableRegion`。
 - **愿景/上限层** → [TODO2](TODO2.md):效果系统(原 N)、画布产品化、极致规模、交互深度。
 - 本文件 = **剩余产品相位 + Plan 2 欠账 + 决策锚点**;一条 ≈ 一个 Phase/PR,完成后上提到正式 plan。
 

@@ -49,6 +49,8 @@
 ④ morph   机制        f(past, current, t) → 插值几何     (0016,完全不知 gate/plan)
 ```
 
+> **节点身份依赖**:plan/stage 的 `Selector`(选 frame/grid/header/cell/row/run)需要**内容节点身份**(不是 glyph 下标)。该身份模型见 **[0020](0020-content-node-identity-model.md)**(嵌套区间 + parent 下标 + 路径哈希);本篇的 `Selector` = 在 0020 节点表上按 kind/range 查询。
+
 ### 4.1 ① gate —— 就绪粒度 `RevealUnit`(统一,不止表格)
 
 门控对**任意块**复用一组单调递进的粒度:
