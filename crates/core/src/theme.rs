@@ -17,6 +17,8 @@ pub(crate) const QUOTE_BAR: [f32; 4] = [0.42, 0.46, 0.56, 0.9];
 pub(crate) const HEAD_RULE: [f32; 4] = [0.24, 0.27, 0.33, 0.9];
 /// 分隔线(`---`)。
 pub(crate) const HR_RULE: [f32; 4] = [0.20, 0.23, 0.28, 0.9];
+/// 删除线(`~~…~~`,A):字中线一条细线,中性浅灰偏暖,暗底可读。
+pub(crate) const STRIKE: [f32; 4] = [0.80, 0.82, 0.88, 0.85];
 
 /// 表格表头底(淡,0014 A)。
 pub(crate) const TABLE_HEADER_BG: [f32; 4] = [0.16, 0.18, 0.24, 0.6];

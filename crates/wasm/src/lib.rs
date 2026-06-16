@@ -22,7 +22,7 @@ use infinite_chat_core::{
     Clock, Connection, Engine, FrameData, FrameGlyph, Player, Record, RenderSink, TableStyle,
 };
 use infinite_chat_render::{
-    EffectProfile, Geom, NodeId, RenderBackend, Sample, Scene, WebGpuBackend,
+    EffectProfile, Geom, NodeId, PanelGeom, PanelScene, RenderBackend, Sample, Scene, WebGpuBackend,
 };
 use wasm_bindgen::prelude::*;
 
@@ -126,6 +126,8 @@ struct GpuSink {
     msdf_font: Option<msdf::MsdfFont>,
     /// streaming 形变保留态场景(0016):几何 past→current 补间,不跳变。
     scene: Scene,
+    /// 表格面板形变保留态(0018 §5 / Plan 6D):框/网格随列变宽补间,与字 `scene` 同 dur(框字同步)。
+    panel_scene: PanelScene,
 }
 
 impl GpuSink {
@@ -309,29 +311,55 @@ impl RenderSink for GpuSink {
                 stroke: r.stroke,
             })
             .collect();
-        // SDF 面板(Plan 6 / 0018):每个 FramePanel 的变长参数扁平进共享 params buffer,实例携
-        // [offset,len) 索引。参数块布局须与 panel.wgsl 一致(见该文件头注释)。
+        // SDF 面板(Plan 6 / 0018):先把本帧面板**几何**提交 panel_scene join(6D:列随吐字变宽
+        // 补间,与字 scene 同 dur → 框字同步),再用**插值后的**几何(box/header/col/row)+ 快照样式
+        // (色/AO/线宽,不补间)扁平进共享 params buffer。参数块布局须与 panel.wgsl 一致。
+        let incoming: Vec<(u64, PanelGeom)> = frame
+            .panels
+            .iter()
+            .map(|p| {
+                (
+                    p.id,
+                    PanelGeom {
+                        pos: p.pos,
+                        size: p.size,
+                        header_ratio: p.header_ratio,
+                        col_ratios: p.col_ratios.clone(),
+                        row_ratios: p.row_ratios.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.panel_scene.commit(&incoming, now);
         let mut params: Vec<f32> = Vec::new();
         let panels: Vec<infinite_chat_render::PanelInstance> = frame
             .panels
             .iter()
             .map(|p| {
+                // 插值几何(缺失 → 回退原始几何);样式(色/AO/线宽/圆角/flags)取最新,不补间。
+                let g = self.panel_scene.displayed(p.id, now).unwrap_or(PanelGeom {
+                    pos: p.pos,
+                    size: p.size,
+                    header_ratio: p.header_ratio,
+                    col_ratios: p.col_ratios.clone(),
+                    row_ratios: p.row_ratios.clone(),
+                });
                 let offset = params.len() as u32;
                 params.extend_from_slice(&p.fill);
                 params.extend_from_slice(&p.line_color);
                 params.extend_from_slice(&p.header_fill);
                 params.push(p.line_w);
                 params.push(p.ao);
-                params.push(p.header_ratio);
-                params.push(p.col_ratios.len() as f32);
-                params.push(p.row_ratios.len() as f32);
+                params.push(g.header_ratio); // 插值
+                params.push(g.col_ratios.len() as f32);
+                params.push(g.row_ratios.len() as f32);
                 params.extend_from_slice(&p.ao_color); // [17..20]
                 params.push(p.ao_width); // [20]
-                params.extend_from_slice(&p.col_ratios); // [21..21+n_cols]
-                params.extend_from_slice(&p.row_ratios);
+                params.extend_from_slice(&g.col_ratios); // [21..21+n_cols] 插值
+                params.extend_from_slice(&g.row_ratios); // 插值
                 infinite_chat_render::PanelInstance {
-                    pos: p.pos,
-                    size: p.size,
+                    pos: g.pos,   // 插值
+                    size: g.size, // 插值
                     radius: p.radius,
                     param_offset: offset,
                     param_len: params.len() as u32 - offset,
@@ -613,7 +641,8 @@ async fn init_and_run(
         glyph_mode: GlyphMode::Auto,
         src_counts: [0; 4],
         msdf_font: None,
-        scene: Scene::new(120.0), // 过渡时长(policy 默认,0016 §8)
+        scene: Scene::new(120.0),            // 过渡时长(policy 默认,0016 §8)
+        panel_scene: PanelScene::new(120.0), // 同 dur → 框字补间同步(0018 §5 / 6D)
     };
     // 留给周期性 resync(Phase J)用:server+session。
     let resync_server = server_url.clone();

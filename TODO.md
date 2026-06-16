@@ -3,11 +3,27 @@
 - **近期可做项已拆出** → [plan4-polish](spec/plan/plan4-polish.md)(排版收口 + markdown 观感 + 基础调试器):含原 M(折行/分级/装饰/表格/令牌/pretext 清理)、调试器 P1 + 数据通道、per-role 度量。
 - **streaming 形变** → [plan5-streaming-markdown](spec/plan/plan5-streaming-markdown.md)(0016 机制 + 0017 落地 + 全 markdown 语法 streaming 规则 + 重放验证 case)。
 - **markdown 全 SDF 化** → [plan6-markdown-all-sdf](spec/plan/plan6-markdown-all-sdf.md)([0018] 落地:零散 FrameRect 装饰 → 一个参数化 SDF 面板图元 + storage buffer + #5 网格/AO/选中,接 0016/0019)。
+- **内容节点树地基** → [plan7-content-node-tree](spec/plan/plan7-content-node-tree.md):**专注落地 [0020]** ——扁平 `Vec<Node>`(嵌套区间+parent+key)sidecar,收编 glyph(0016)/TableRegion(0014)/FramePanel(6D)身份,暴露查询 API,留下游接口(`Embed` kind 占位)。**简约 v1**(不上路径哈希/Taffy/任何消费者)。**下游各自后续**:reveal(0019)、Taffy(0023)、DOM embed(0022)、节点级 morph(0016 留尾)。
 - **内容节点身份(scene-graph-lite)** → [0020](spec/decision/0020-content-node-identity-model.md):扁平 `Node` 表(嵌套区间 + parent 下标 + 路径哈希),统一 0016 NodeId / 0014 TableRegion / 0019 Selector;与 tile 分桶正交。**0019 reveal + 0016 节点级 morph 的前置**。
 - **JS/Rust 边界 + 可配置渲染样式** → [0021](spec/decision/0021-js-rust-boundary-and-configurable-render.md):渲染样式全数据驱动(`Palette` 角色配色 + `RenderStyle`,shader 去写死、从 buffer 取)、布局/渲染两条生效路径固化、**pretext 作复杂 layout 预留**(契约固定可热替换)。落地清单见 0021 §8。`TableStyle`(Plan 6)是样板。
+- **Taffy 盒子布局(chat 内容/页面)** → [0023](spec/decision/0023-taffy-box-layout.md):chat 内容是盒子树 → 用 **Taffy**(Zed/GPUI 同款,纯 Rust block/flex/grid)over [0020] 节点树;**叶子 measure 接 measureText(JS,护城河)/placeTable/reportSize**;Taffy(wasm)+ measure 回调 + 缓存;输出喂 0016 形变(reflow 不跳变);收编 build_frame 块堆叠 + placeTable 外层。落地清单见 0023 §10。**未排期**(chat 页面期做,与 0020 同期)。
+- **DOM 叠加层(HTML 逃生口)** → [0022](spec/decision/0022-dom-overlay-layer.md)(调研底稿 [research/dom-overlay-layer](spec/research/dom-overlay-layer.md)):canvas 画不了整个 HTML 生态 → 在画布上叠**与相机同步的绝对定位 DOM box**(`NodeKind::Embed` 留位 + `world_to_screen`+scale 随缩放/平移 + light/dark 主题联动 + 事件钩子 + 尺寸回报重排)。范本 = drei `<Html>`/CSS3DRenderer/deck.gl。与"栅格化进 canvas"(0007/0013/TODO O)正交分流;接 0016(reflow 平滑)/0020(id)/0021(主题源)。落地清单见 0022 §9。**未排期**,面向少量交互/富媒体嵌入。
   - **⏳ 排期:待「非表格 markdown 全支持」之后再做**(见下「Plan 5 续 · 非表格 markdown 完备」)。它不阻塞 markdown 语法补全,反而该在语法齐全、节点种类稳定后一次性把 jcode `Document` 拍平时记区间建 `NodeTree`(0020 §9)。在此之前 0016/0014/0019 继续用现有 `(block_seq,glyph_idx)` / `TableRegion`。
 - **愿景/上限层** → [TODO2](TODO2.md):效果系统(原 N)、画布产品化、极致规模、交互深度。
 - 本文件 = **剩余产品相位 + Plan 2 欠账 + 决策锚点**;一条 ≈ 一个 Phase/PR,完成后上提到正式 plan。
+
+---
+
+## 表格遗留(2026-06-16;A 删除线已修,其余排队)
+
+> 表格主体已落地(对齐/内联/链接 text-only/CJK 像素对齐/字体跟随/真竖网格 per-table 面板/AO/垂直对齐/实时 TableStyle setter)。删除线(A)已修。以下未做:
+
+- **B 斑马纹 / 行底交替**:偶数数据行淡底,提升宽表可读。走 `TableStyle`(加 `zebra_fill`)+ `panel.wgsl`(按 row band 判奇偶填色)+ style 面板控件。实时、不重排。
+- **C 宽表横向滚动(局部)**:超宽表在**表格内**横向滚,而非整画布 pan。**最重**,需:每表横向 `scrollX` 状态 + 表格框**裁剪**(wgpu scissor 分批 / 或 shader 按框 clip)+ 输入命中(指针/滚轮落在表格区 → 滚表不滚画布)。需单独设计(可能开 ADR / plan6 §)。
+- **D 单元格选中 / hover 高亮**:cell index → SDF 子矩形高亮(0018 §3 / Plan 6F),纯参数无新图元。
+- **E streaming 表格 reflow 不跳变 ✅(2026-06-16,Plan 6D)**:字本就走 0016 `Scene` 补间;新增并列 `PanelScene`(同 dur)给框/网格补间——`FramePanel.id=(block_seq,表序号)`,`submit` 提交面板几何 join,发射插值后的 box/header/col/row(col 逐元素、row 补前缀+新行出现)。色/AO/线宽不补间。留尾:exit 淡出(同 0016 路 A)。
+- **F 骨架先行揭示**:先画框→再填字、可放慢(0017 §10 / 6E;排期在「非表格 markdown 全支持」后,与 [0019]/[0020] 同期)。
+- **G 比例体强调(待核实)**:表格 cell 的 `**粗**`/`*斜*` 当前走等宽角色(TableStrong/TableEm + MONO 字体);B 像素两趟后已不要求等宽,可改跟随预设比例字体。先核实 `layout-bridge.fontForRole` 对表格角色是否仍强制 MONO,再定改不改。
 
 ---
 
@@ -17,7 +33,7 @@
 
 - **★ reveal 节奏自主([0017 §10](spec/decision/0017-markdown-streaming-landing.md) 北极星;形式化 [0019](spec/decision/0019-reveal-gating-and-choreography.md))**:按 [0019] 四层(gate 就绪门 / plan 风格数据 / 调度器 / 0016 机制)实现——`RevealUnit` + `gate` 谓词 + 双门(内容/布局)+ `RevealStyle` 数据 + reveal 调度器(节奏与 token 解耦 / 限速 / **可刻意放慢**)+ **骨架先行**(表头框→填字,框走 [0018])+ **非表格结构块 raw 抑制**;表格三风格(原始/行框/全表)= 配置表三行。设计 `design/thinking.md §1/§3`。
 - **★ SDF 面板/装饰图元([0018](spec/decision/0018-sdf-panel-decoration-primitive.md)) → 已拆成 [Plan 6](spec/plan/plan6-markdown-all-sdf.md)**:`panel.wgsl` + 小 storage buffer(命令+扁平参数,**照搬 onedraw 数据模型**,见 [research/onedraw-analysis](spec/research/onedraw-analysis.md))→ **#5 真竖直网格 + AO + 圆角 + 选中/hover**;再**收编所有块装饰**(代码块底/引用/Alert)。6A 图元+数据通道 → 6B 表格满血 → 6C 收编全部装饰 → 6D 接 0016 → 6E 接 0019 → 6F 效果入口。设计 `design/thinking.md §4`。
-- **非表格 markdown 渲染质量**:列表(有序/嵌套/任务 `- [ ]`/松紧)、**删除线渲染**(attrs.strikethrough 已有未用)、多级引用;代码块**语法高亮**(并 H5)。
+- **非表格 markdown 渲染质量**:列表(有序/嵌套/任务 `- [ ]`/松紧)、多级引用;代码块**语法高亮**(并 H5)。(**删除线 ✅ 2026-06-16**:`StyledSpan.strike` → 字中线 FrameRect,正文+表格通用。)
 - **非表格重放 case 补全(5D)**:嵌套/有序/任务列表、围栏语言标注、转义、自动链接、脚注。
 - **[0016] 机制留尾**:exit 淡出、GPU 双态(路 A)、policy 层(ease/dur 大表)、settle 后移出 Scene 内存优化。
 - 截图快照回归(5D4);`?verify` 黄金样张(并 [V](#v--组件内观感验证视图opinionated非兼容性测试))。

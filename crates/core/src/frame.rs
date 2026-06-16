@@ -50,6 +50,9 @@ pub const PANEL_AO: u32 = 2;
 /// `colX/rowY`(plan5 §5F)→ #5 连续竖线天然对齐。世界坐标,文字**之前**绘制。
 #[derive(Clone, Debug, PartialEq)]
 pub struct FramePanel {
+    /// 跨帧稳定身份(高32=block_seq,低32=表在块内序号;append-only 稳定)。供 render 侧
+    /// `PanelScene` 配对做几何补间(0018 §5 / Plan 6D:列随吐字长大不跳变)。
+    pub id: u64,
     /// 左上角世界坐标。
     pub pos: [f32; 2],
     /// 宽高。

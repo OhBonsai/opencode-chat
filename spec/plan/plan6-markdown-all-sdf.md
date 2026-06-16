@@ -71,17 +71,18 @@
 
 **卡口**:卡口全绿;重放 `c01–c10` 全 case 截图与迁移前对拍(装饰位置/颜色不变,观感升级);确认无 FrameRect 装饰残留(调试框除外)。
 
-## Phase 6D — 接 0016 过渡(框几何也补间)
+## Phase 6D — 接 0016 过渡(框几何也补间)— ✅ 已落地(2026-06-16)
 
 > 域:`render`(panel 参数插值)+ `core`。streaming 中列宽/行高/块高随揭示变 → **字走 0016 morph,框的 `colRatios/box` 也要补间**,否则字滑框 snap(0018 §5)。
 
 **任务**
 
-- [ ] **路 B(v1 推荐,与 0016 CPU mix 同精神)**:CPU 每帧把 past→current 插值后的面板参数 `update` 进 storage buffer;面板过渡 = 0016 的"非 glyph 通道",节奏与 0016 对齐(同 t/ease)。
-- [ ] **面板身份**:面板按块(`block_seq`)给稳定 id,供 past↔current 配对(类比 0016 NodeId,粒度到块/面板)。
-- [ ] (留尾)**路 A**:shader 收 past+current 两套参数 + t 自插值(热点后升级)。
+- [x] **路 B(CPU mix,与 0016 同精神)**:新增 `render/morph.rs::PanelScene`(并列 `Scene`,**同 dur=120ms**)——每帧 `commit` 全部面板几何 join,`displayed` 取插值几何;`GpuSink::submit` 发射插值后的 box/header/col/row 进 params buffer(色/AO/线宽快照、不补间)。shader 不动。
+- [x] **面板身份**:`FramePanel.id = (block_seq<<32)|表序号`(append-only 稳定),`block_decorations` 设;`PanelScene` 按 id 配对。
+- [x] **比例数组补间**:col 列数稳定 → 逐元素 lerp;row 行数随吐字增 → 补公共前缀 + 新行直接出现(其字本就 spawn 淡入);box.size.y 同步长高。past 取打断时显示态(不回跳)。
+- [ ] (留尾)**路 A**:shader 收 past+current 两套参数 + t 自插值;**exit 淡出**(同 0016 路 A;现退出面板直接丢弃)。
 
-**卡口**:卡口全绿;重放表格增量长列 + 代码块增量长高:框跟字平滑长大、无 snap(截图逐帧/慢放 `?speed`)。
+**卡口**:`PanelScene` 2 单测(reflow 补间 + 新行出现 / 退出丢弃);**重放截图逐帧验留用户本机**(沙箱无 GPU)。需 `wasm-pack build`。
 
 ## Phase 6E — 接 0019 揭示(骨架先行)
 

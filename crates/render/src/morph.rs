@@ -209,6 +209,126 @@ impl Scene {
     }
 }
 
+// ── SDF 面板形变(0018 §5 / Plan 6D)──────────────────────────────────────────
+// 表格框/网格随 streaming 列变宽不跳变:与字(`Scene`)同款 CPU-mix 补间(路 B),同 `dur`/缓动 →
+// 框字同步。只补**几何**(box pos/size + header/col/row 比例);颜色/AO/线宽不插值(snap,取最新)。
+// col 列数稳定 → 逐元素补;row 行数随吐字增 → 补公共前缀、新行直接出现(其字本就 spawn 淡入)。
+
+/// 面板可补间几何(0018 §5)。`id` 由上游(app)按 `(block_seq, 表序号)` 打包,append-only 稳定。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelGeom {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub header_ratio: f32,
+    pub col_ratios: Vec<f32>,
+    pub row_ratios: Vec<f32>,
+}
+
+/// 比例数组插值:逐元素补到 `c` 的长度;`p` 缺位(新行)→ 直接取 `c`(出现)。
+fn lerp_ratios(p: &[f32], c: &[f32], e: f32) -> Vec<f32> {
+    c.iter()
+        .enumerate()
+        .map(|(i, &cv)| p.get(i).map_or(cv, |&pv| lerp(pv, cv, e)))
+        .collect()
+}
+
+fn lerp_panel(a: &PanelGeom, b: &PanelGeom, e: f32) -> PanelGeom {
+    PanelGeom {
+        pos: [lerp(a.pos[0], b.pos[0], e), lerp(a.pos[1], b.pos[1], e)],
+        size: [lerp(a.size[0], b.size[0], e), lerp(a.size[1], b.size[1], e)],
+        header_ratio: lerp(a.header_ratio, b.header_ratio, e),
+        col_ratios: lerp_ratios(&a.col_ratios, &b.col_ratios, e),
+        row_ratios: lerp_ratios(&a.row_ratios, &b.row_ratios, e),
+    }
+}
+
+fn panel_geom_eq(a: &PanelGeom, b: &PanelGeom) -> bool {
+    let close = |x: f32, y: f32| (x - y).abs() < 0.01;
+    let arr =
+        |p: &[f32], c: &[f32]| p.len() == c.len() && p.iter().zip(c).all(|(x, y)| close(*x, *y));
+    close(a.pos[0], b.pos[0])
+        && close(a.pos[1], b.pos[1])
+        && close(a.size[0], b.size[0])
+        && close(a.size[1], b.size[1])
+        && close(a.header_ratio, b.header_ratio)
+        && arr(&a.col_ratios, &b.col_ratios)
+        && arr(&a.row_ratios, &b.row_ratios)
+}
+
+struct PanelNode {
+    current: PanelGeom,
+    past: Option<PanelGeom>,
+    t_start: f32,
+}
+
+impl PanelNode {
+    fn displayed(&self, now: f32, dur: f32) -> PanelGeom {
+        match &self.past {
+            None => self.current.clone(),
+            Some(p) => {
+                let t = ((now - self.t_start) / dur.max(1.0)).clamp(0.0, 1.0);
+                lerp_panel(p, &self.current, ease_cubic_out(t))
+            }
+        }
+    }
+
+    fn done(&self, now: f32, dur: f32) -> bool {
+        self.past.is_some() && now - self.t_start >= dur
+    }
+}
+
+/// 面板保留态场景(0018 §5 / Plan 6D):`id → PanelNode`,join + 几何补间。与 [`Scene`] 并列,
+/// 同 `dur`(同步)。每帧 [`commit`](Self::commit) 全部可见面板,再用 [`displayed`](Self::displayed)
+/// 取插值几何建参数。未出现的面板自动丢弃(v1 无退出淡出,同 0016)。
+pub struct PanelScene {
+    nodes: HashMap<u64, PanelNode>,
+    dur_ms: f32,
+}
+
+impl PanelScene {
+    pub fn new(dur_ms: f32) -> Self {
+        Self {
+            nodes: HashMap::new(),
+            dur_ms: dur_ms.max(1.0),
+        }
+    }
+
+    /// 提交本帧全部面板几何:几何变 → past 取显示态(可打断不回跳);未变且过渡完成 → 塌回 None;
+    /// 不在本帧的面板丢弃。`now` = 当前帧 ms。
+    pub fn commit(&mut self, incoming: &[(u64, PanelGeom)], now: f32) {
+        let seen: HashSet<u64> = incoming.iter().map(|(id, _)| *id).collect();
+        for (id, geom) in incoming {
+            match self.nodes.get_mut(id) {
+                Some(n) => {
+                    if !panel_geom_eq(&n.current, geom) {
+                        n.past = Some(n.displayed(now, self.dur_ms));
+                        n.current = geom.clone();
+                        n.t_start = now;
+                    } else if n.done(now, self.dur_ms) {
+                        n.past = None; // 过渡完成塌缩
+                    }
+                }
+                None => {
+                    self.nodes.insert(
+                        *id,
+                        PanelNode {
+                            current: geom.clone(),
+                            past: None,
+                            t_start: now,
+                        },
+                    );
+                }
+            }
+        }
+        self.nodes.retain(|id, _| seen.contains(id)); // 退出:丢弃(v1 无淡出)
+    }
+
+    /// 取某面板的本帧插值几何(commit 之后调)。缺失 → None(调用方回退原始几何)。
+    pub fn displayed(&self, id: u64, now: f32) -> Option<PanelGeom> {
+        self.nodes.get(&id).map(|n| n.displayed(now, self.dur_ms))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +442,52 @@ mod tests {
         s.commit(&[(id, geom(0.0, 0.0), sample())], 16.0); // 几何不变
         assert!(s.nodes[&id].past.is_none(), "静止节点零保留态");
         assert!(s.all_settled(16.0));
+    }
+
+    fn pgeom(w: f32, h: f32, col: f32, rows: Vec<f32>) -> PanelGeom {
+        PanelGeom {
+            pos: [0.0, 0.0],
+            size: [w, h],
+            header_ratio: 0.5,
+            col_ratios: vec![col],
+            row_ratios: rows,
+        }
+    }
+
+    #[test]
+    fn panel_reflow_tweens_and_rows_grow() {
+        let mut ps = PanelScene::new(DUR);
+        let id = 1u64;
+        ps.commit(&[(id, pgeom(100.0, 20.0, 0.5, vec![]))], 0.0);
+        // 列变宽(0.5→0.6)+ 框变宽(100→140)+ 新增一行(0→1 条行线)。
+        ps.commit(&[(id, pgeom(140.0, 40.0, 0.6, vec![0.6]))], 0.0);
+        let mid = ps.displayed(id, 50.0).expect("present"); // t=0.5
+        assert!(
+            mid.size[0] > 100.0 && mid.size[0] < 140.0,
+            "框宽补间中: {}",
+            mid.size[0]
+        );
+        assert!(
+            mid.col_ratios[0] > 0.5 && mid.col_ratios[0] < 0.6,
+            "列比例补间"
+        );
+        assert_eq!(
+            mid.row_ratios.len(),
+            1,
+            "新增行立即出现(无 past 直接取 current)"
+        );
+        // 过渡完成 → 塌回 current。
+        ps.commit(&[(id, pgeom(140.0, 40.0, 0.6, vec![0.6]))], 200.0);
+        let done = ps.displayed(id, 200.0).expect("present");
+        assert!((done.size[0] - 140.0).abs() < 0.5, "完成后取 current");
+    }
+
+    #[test]
+    fn panel_unseen_dropped() {
+        let mut ps = PanelScene::new(DUR);
+        ps.commit(&[(1u64, pgeom(10.0, 10.0, 0.5, vec![]))], 0.0);
+        ps.commit(&[(2u64, pgeom(10.0, 10.0, 0.5, vec![]))], 0.0); // 1 未出现 → 丢弃
+        assert!(ps.displayed(1, 0.0).is_none(), "退出面板应丢弃");
+        assert!(ps.displayed(2, 0.0).is_some());
     }
 }
