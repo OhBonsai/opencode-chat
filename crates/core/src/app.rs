@@ -737,7 +737,11 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         let table_style = self.scheduler.table_style();
         let mut released = 0usize;
         let mut had_candidates = false; // 有待揭字但被限速挡住 → 不清预算(攒着下帧揭)
-        for view in &mut self.views {
+                                        // 9F 内容门:末块在 turn 未收尾前视为"仍在流入(未闭合)";整表风格据此 hold 开放的 Full 表。
+        let turn_open = self.turn.status() != TurnStatus::Settled;
+        let last_view = self.views.len().saturating_sub(1);
+        for vi in 0..self.views.len() {
+            let view = &mut self.views[vi];
             let Some(cache) = &view.cache else { continue };
             let gcount = cache.clusters.len();
             // spawn 表与 display 字形对齐(reparse 增长则补 None,收缩则截断);已释放的保留(append 稳定)。
@@ -763,7 +767,13 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             // 风格 → 逐 glyph tier/offset(0019 §4.2 在 0020 节点树上落地)。**逐顶层块**各用自身
             // 风格(标题/段落逐字、表格走风格、代码/列表/引用骨架),避免含表格的消息把整条当单块
             // → 表格后的标题/段落被连坐永久 hold(c06-all 段间空白根因)。
-            let plan = reveal::resolve_tree(&cache.nodes, table_style);
+            // 末块(该视图最后一个顶层块)若属仍在流入的活动视图 → 开放未闭合(9F 内容门)。
+            let open_block = if vi == last_view && turn_open {
+                cache.nodes.children(0).last()
+            } else {
+                None
+            };
+            let plan = reveal::resolve_tree(&cache.nodes, table_style, open_block);
             // 候选 = 已揭示(非 hold)且尚未上屏且非零墨换行;按 (tier, 序) 排 → 骨架/表头先于 body。
             let mut cand: Vec<usize> = (0..gcount)
                 .filter(|&g| {
@@ -1333,6 +1343,10 @@ mod tests {
         for _ in 0..60 {
             eng.frame(16.0);
         }
+        // 默认整表风格等表闭合(9F):推进看门狗收尾 → 整表(网格→表头→cell)揭示。
+        for _ in 0..6 {
+            eng.frame(8_000.0);
+        }
         let f = eng.sink().last().expect("frame");
         // 表头 'A' 与 body '3' 都应揭示;表头早于 body(tier:表头 < body)→ 骨架/网格先、表头次、body 末。
         let spawn_of = |c: &str| {
@@ -1368,7 +1382,7 @@ mod tests {
             "成形中的表格不应揭示任何 raw 字: {:?}",
             f.glyphs.iter().map(|g| &g.cluster).collect::<Vec<_>>()
         );
-        // 分隔行到齐 → 确认成表 → 表头字揭示。
+        // 分隔行到齐 → 确认成表;默认整表风格(Full)等表闭合(turn 收尾)才揭(9F 内容门)。
         let player2 = Player::from_pairs(vec![(0.0, delta("p2", "| a | b |\n|---|---|"))], 16.0);
         let mut eng2 = Engine::new(
             player2,
@@ -1377,12 +1391,12 @@ mod tests {
             2000.0,
             800.0,
         );
-        for _ in 0..60 {
-            eng2.frame(16.0);
+        for _ in 0..6 {
+            eng2.frame(8_000.0); // 推进 ~48s → 看门狗收尾(表闭合)→ 整表揭示
         }
         assert!(
             eng2.sink().visible_text().contains('a'),
-            "确认成表后应揭示表头字"
+            "表闭合(turn 收尾)后整表应揭示表头字"
         );
     }
 

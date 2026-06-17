@@ -234,14 +234,27 @@ impl GlyphPlan {
 /// **递归揭示**(Plan 9 §2 替换 Plan 8 全局 tier/Selector):在 [0020 嵌套集节点树](crate::nodes)上
 /// 自根 DFS——每容器按其 [`Ordering`] 排子节点(文档序),骨架先行的容器留前导延迟,叶(Run/Glyph)
 /// 逐字。**tier = 顶层块文档序**(块间自上而下、不拖累);**delay_ms = 沿途累加的编排时序**。
-/// `table` 选表格 3 风格预设。调度器([`crate::app::Engine::schedule`])用此函数。
-pub fn resolve_tree(tree: &NodeTree, table: TableStyleKind) -> GlyphPlan {
+/// `table` 选表格 3 风格预设。
+///
+/// **就绪门(9F §2.5,Full 表)**:`open_block` = 当前**仍在流入(未闭合)**的末块节点下标(无则
+/// `None`)。整表骨架风格要求"整表闭合 + 列宽全定"才揭(g-table 整表),故当 `open_block` 正是一个
+/// **Full 表格块**时,把它整体 hold(留 `tier=MAX`)直到它闭合(不再是 open_block:后续块到达 /
+/// turn 收尾)——`spawn=max(门, 编排)` 的内容门下限。行框/原始不受此门(到行/到字即揭)。
+/// 调度器([`crate::app::Engine::schedule`])用此函数。
+pub fn resolve_tree(tree: &NodeTree, table: TableStyleKind, open_block: Option<u32>) -> GlyphPlan {
     let total = tree.root().map_or(0, |r| r.range.1) as usize;
     let mut tier = vec![u32::MAX; total];
     let mut delay_ms = vec![0.0f32; total];
     let mut skeleton_first = false;
     // 顶层块 = 根 Doc 直接子;每块一个 tier(= 文档序块下标),块内 delay 由递归编排。
     for (bi, b) in tree.children(0).enumerate() {
+        // 9F 内容门:整表风格下,正在流入的 Full 表格 hold(等闭合)→ 跳过,glyph 留 MAX。
+        if table == TableStyleKind::Full
+            && open_block == Some(b)
+            && tree.nodes()[b as usize].kind == NodeKind::Table
+        {
+            continue;
+        }
         resolve_node(
             tree,
             b,
@@ -530,7 +543,7 @@ mod tests {
     fn resolve_tree_tiers_are_document_order_no_cross_block_jump() {
         // 9A DoD #1:tier = 顶层块文档序 → 靠后块 tier 更大,绝不抢到靠前块之前。
         let (tree, clusters) = tree_and_clusters("# 一\n\npara\n\n## 二");
-        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let plan = resolve_tree(&tree, TableStyleKind::Full, None);
         let idx = |c: &str| clusters.iter().position(|x| x == c).expect("char");
         // 标题"一"(块0)< 段落"p"(块1)< 标题"二"(块2)。
         let t1 = plan.tier[idx("一")];
@@ -548,7 +561,7 @@ mod tests {
     fn resolve_tree_full_table_skeleton_header_before_body() {
         // 9B/§3 整表:骨架先行;表头(文档序在前)delay < body。
         let tree = table_tree();
-        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let plan = resolve_tree(&tree, TableStyleKind::Full, None);
         assert!(plan.skeleton_first, "整表风格应骨架先行");
         // glyph 0 = 表头首格 'A';其 delay = 网格前导(>0)。
         assert!(plan.delay_ms[0] >= GRID_LEAD, "表头在网格骨架之后");
@@ -566,9 +579,32 @@ mod tests {
     }
 
     #[test]
+    fn resolve_tree_full_table_held_while_open() {
+        // 9F 内容门:整表风格下,正在流入(open_block)的 Full 表格整体 hold(等闭合);
+        // 闭合后(open_block=None)才揭。行框不受此门。
+        let tree = table_tree();
+        let table_block = tree.children(0).next().expect("table block idx");
+        let open = resolve_tree(&tree, TableStyleKind::Full, Some(table_block));
+        assert!(
+            (0..open.tier.len()).all(|g| !open.revealed(g)),
+            "流入中的整表应整体 hold(等闭合)"
+        );
+        let closed = resolve_tree(&tree, TableStyleKind::Full, None);
+        assert!(
+            (0..closed.tier.len()).any(|g| closed.revealed(g)),
+            "闭合后整表应揭示"
+        );
+        let rowframe = resolve_tree(&tree, TableStyleKind::RowFrame, Some(table_block));
+        assert!(
+            (0..rowframe.tier.len()).any(|g| rowframe.revealed(g)),
+            "行框不等整表闭合(到行即揭)"
+        );
+    }
+
+    #[test]
     fn resolve_tree_raw_table_no_skeleton_zero_delay() {
         let tree = table_tree();
-        let plan = resolve_tree(&tree, TableStyleKind::Raw);
+        let plan = resolve_tree(&tree, TableStyleKind::Raw, None);
         assert!(!plan.skeleton_first, "raw 风格无骨架");
         assert!(
             plan.delay_ms.iter().all(|&d| d == 0.0),
@@ -579,7 +615,7 @@ mod tests {
     #[test]
     fn resolve_tree_text_all_revealed_zero_delay() {
         let tree = crate::content::parse_markdown_nodes("hello world", 0).2;
-        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let plan = resolve_tree(&tree, TableStyleKind::Full, None);
         assert!(!plan.skeleton_first);
         let total = tree.root().map_or(0, |r| r.range.1) as usize;
         assert!((0..total).all(|g| plan.revealed(g)), "纯文本全部揭示");
@@ -593,7 +629,7 @@ mod tests {
     fn resolve_tree_nested_list_depth_first_doc_order() {
         // 9D:嵌套列表逐项,深度优先文档序;a < a1(嵌套子项)< b。
         let (tree, clusters) = tree_and_clusters("- a\n  - a1\n- b");
-        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let plan = resolve_tree(&tree, TableStyleKind::Full, None);
         let d = |c: &str| plan.delay_ms[clusters.iter().position(|x| x == c).expect("char")];
         assert!(d("a") < d("b"), "项 a 应早于项 b: {} {}", d("a"), d("b"));
         // 'a1' 的 '1'(嵌套子项)在 a 之后、b 之前(深度优先)。
@@ -681,7 +717,7 @@ mod tests {
     fn resolve_tree_skeleton_code_chars_delayed() {
         // 代码块骨架先行:底先现(SKELETON_LEAD 前导)→ 码字带延迟。
         let tree = crate::content::parse_markdown_nodes("```\nlet x=1;\n```", 0).2;
-        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let plan = resolve_tree(&tree, TableStyleKind::Full, None);
         assert!(plan.skeleton_first, "代码块骨架先行");
         // 码字延迟 ≥ 骨架前导(底/框先于字)。
         assert!(
