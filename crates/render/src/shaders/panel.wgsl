@@ -6,9 +6,9 @@
 // 参数块(f32,自 param_offset 起):
 //   [0..4]  fill rgba   [4..8] line rgba   [8..12] header rgba
 //   [12] line_w(px)  [13] ao_strength  [14] header_ratio(0..1)  [15] n_cols  [16] n_rows
-//   [17..20] ao_color rgb   [20] ao_width(px,AO 向内淡出距离)
-//   [21 .. 21+n_cols]            col_ratios(0..1)
-//   [21+n_cols .. +n_rows]       row_ratios(0..1)
+//   [17..20] ao_color rgb   [20] ao_width(px,AO 向内淡出距离)  [21] reveal(0..1,纵向揭示)
+//   [22 .. 22+n_cols]            col_ratios(0..1)
+//   [22+n_cols .. +n_rows]       row_ratios(0..1)
 // flags:bit0=grid,bit1=ao。线宽/线色/AO 色/AO 宽/AO 强度均为参数(暗色主题 AO 取白,做向内辉光)。
 
 struct Globals {
@@ -86,6 +86,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n_rows = u32(params[base + 16u]);
     let ao_color = vec3<f32>(params[base + 17u], params[base + 18u], params[base + 19u]);
     let ao_width = params[base + 20u];
+    let reveal = params[base + 21u];
 
     // 外框覆盖率(圆角 SDF + fwidth AA)。
     let d = sd_round_box(in.local, in.halfsz, in.radius);
@@ -97,6 +98,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // 框内归一坐标(0..1,左上原点)。
     let uv = (in.local + in.halfsz) / max(in.halfsz * 2.0, vec2<f32>(1.0, 1.0));
+
+    // 纵向揭示(0019 风格化骨架):reveal 以下不画 → 行框逐行长出 / 整表空框先现。
+    if uv.y > reveal {
+        discard;
+    }
 
     // 底色;表头区(uv.y < header_ratio)叠表头底。
     var col = fill;
@@ -110,11 +116,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let h = in.halfsz.y * 2.0;
         var dmin = 1.0e9;
         for (var c = 0u; c < n_cols; c = c + 1u) {
-            let lx = params[base + 21u + c] * w;
+            let lx = params[base + 22u + c] * w;
             dmin = min(dmin, abs(in.local.x + in.halfsz.x - lx));
         }
         for (var r = 0u; r < n_rows; r = r + 1u) {
-            let ly = params[base + 21u + n_cols + r] * h;
+            let ly = params[base + 22u + n_cols + r] * h;
             dmin = min(dmin, abs(in.local.y + in.halfsz.y - ly));
         }
         let g = 1.0 - smoothstep(0.0, max(line_w, 0.5), dmin);

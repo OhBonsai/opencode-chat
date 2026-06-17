@@ -112,12 +112,15 @@ fn node_debug_rects(
 
 /// 从块的字形角色派生装饰矩形(代码块底 / 行内码 chip / 引用·Alert 左条 / H1·H2 细线 /
 /// 分隔线,Plan 4B1)。颜色令牌见 [`crate::theme`]。
+#[allow(clippy::too_many_arguments)] // reason: 装饰需缓存/几何/样式/揭示进度多源;Plan 9C 再收束
 fn block_decorations(
     cache: &BlockCache,
     block_seq: u32,
     top: f32,
     max_width: f32,
     ts: &TableStyle,
+    spawn: &[Option<f32>],
+    reveal_kind: TableStyleKind,
     out: &mut Vec<FrameRect>,
     panels: &mut Vec<FramePanel>,
 ) {
@@ -245,6 +248,42 @@ fn block_decorations(
         } else {
             0.0
         };
+        // 揭示比例(0019 §2 风格化骨架):原始=恒 1;整表骨架=释放即整框(空框先现,字按
+        // header→cell tier 后填);行框=框随"已揭行"逐步长大(行框先于该行字)。比例相对**框**
+        // (含 pad,与 panel.wgsl 的 uv.y 同基:框顶 = t.y - pad、框高 gh)。
+        let reveal = if reveal_kind == TableStyleKind::Raw {
+            1.0
+        } else {
+            let (mut any, mut max_bottom) = (false, f32::MIN);
+            for (j, pl) in cache.placed.iter().enumerate() {
+                if cache.clusters[j] == "\n" || spawn.get(j).copied().flatten().is_none() {
+                    continue; // 仅数已释放(spawn 有值)的字
+                }
+                let (gx, gy) = (pl.pos[0], pl.pos[1]);
+                if gx >= t.x && gx <= t.x + t.w && gy >= t.y && gy <= t.y + t.h {
+                    any = true;
+                    max_bottom = max_bottom.max(gy + pl.size[1]);
+                }
+            }
+            if !any {
+                0.0 // 整表/行框:未释放任何字 → 框尚不画
+            } else if reveal_kind == TableStyleKind::Full {
+                1.0
+            } else {
+                // 行框:长到 ≥ 当前已揭字底的最近行线(t.rows ∪ 表底),含该行框线。
+                let mut edge = t.y + t.h;
+                for &ry in &t.rows {
+                    if ry >= max_bottom {
+                        edge = edge.min(ry);
+                    }
+                }
+                if edge >= t.y + t.h - 0.5 {
+                    1.0
+                } else {
+                    ((edge - t.y + pad) / gh).clamp(0.0, 1.0)
+                }
+            }
+        };
         panels.push(FramePanel {
             id: (u64::from(block_seq) << 32) | ti as u64, // 稳定身份 → 0016 panel 补间(6D)
             pos: [t.x - pad, t.y + top - pad],
@@ -260,6 +299,7 @@ fn block_decorations(
             header_ratio,
             col_ratios,
             row_ratios,
+            reveal,
             flags: crate::frame::PANEL_GRID | crate::frame::PANEL_AO,
         });
     }
@@ -613,6 +653,13 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
 
     /// 推进一帧。串:收事件→落 store→整流到达(smoother)→排版→**揭示调度**(0019)→组帧。
     pub fn frame(&mut self, dt_ms: f64) {
+        self.advance(dt_ms);
+        self.render_now();
+    }
+
+    /// 推进**模拟**一帧(不出图):时钟 + 事件摄入 + 到达整流 + 排版 + 揭示调度。与 [`render_now`]
+    /// 拆分,使 [`seek_reveal`] 可低成本快进(多步只推模拟、末尾出一帧),避免每微步都提交 GPU。
+    fn advance(&mut self, dt_ms: f64) {
         self.now_ms += dt_ms;
         self.turn.tick(self.now_ms);
         self.ingest_events();
@@ -620,8 +667,26 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         self.reveal(dt_ms); // smoother:token 突发 → 匀速到达(内容真值)
         self.ensure_layouts(); // 块冻结排版 → display 字形 + 节点树就绪
         self.schedule(dt_ms); // 调度器:按风格/门/时钟释放 display 字形,定 spawn_time(唯一揭示路径)
+    }
+
+    /// 用当前状态出一帧并提交(不推进时钟)。
+    fn render_now(&mut self) {
         let frame = self.build_frame();
         self.sink.submit(&frame);
+    }
+
+    /// 重放**揭示**动画到时间轴 `target_ms`(调试播放器拖拽用):清空 spawn 后按固定步长把揭示
+    /// 模拟从头推进到 `target_ms`,末尾出一帧。内容已加载(冻结块)时只重跑揭示(0019),确定性
+    /// 可重复(同 `target_ms` → 同画面);揭示节奏由当前 `reveal_cps`/`slow` 决定(播放器设固定基速)。
+    pub fn seek_reveal(&mut self, target_ms: f64) {
+        self.restart_reveal();
+        let step: f64 = 16.0;
+        let mut t = 0.0;
+        while t < target_ms {
+            self.advance(step.min(target_ms - t));
+            t += step;
+        }
+        self.render_now();
     }
 
     /// 设揭示速率上限(glyph/秒);≤0 / 非有限 = 不限速(跟内容到达,默认)。web 调试面板调。
@@ -640,14 +705,30 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             .set_table_style(TableStyleKind::from_u32(style));
     }
 
+    /// 重放揭示动画(调试):清空各非瞬显视图的 `spawn` → 下一帧起调度器按**当前**风格/速度
+    /// 从头再揭示一遍。用于"改了风格/速度想立刻看到效果":内容已全部上屏(冻结)时,改设置
+    /// 本身没有待揭的字,故需主动重启;`set_table_reveal_style`/`set_reveal_*` 后调此即可见效。
+    pub fn restart_reveal(&mut self) {
+        for view in &mut self.views {
+            if view.instant {
+                continue; // 历史瞬显块不参与揭示动画
+            }
+            for s in &mut view.spawn {
+                *s = None;
+            }
+        }
+        self.scheduler.idle_reset();
+    }
+
     /// 当前表格揭示风格的数值(0/1/2)。
     pub fn table_reveal_style(&self) -> u32 {
         self.scheduler.table_style() as u32
     }
 
-    /// 揭示调度(0019 §4.3):**唯一**揭示路径。按各块风格([`reveal::style_for_block`])在节点树上
-    /// 解析 tier/offset([`reveal::resolve`]),用调度器时钟(限速/放慢/可重放)按 (tier, 序) 释放
-    /// 尚未上屏的 display 字形,定其 `spawn_time = 释放时刻 + offset`(骨架先行:结构块字带 offset,
+    /// 揭示调度(0019 §4.3 / Plan 9):**唯一**揭示路径。在 0020 嵌套集上**递归**排程
+    /// ([`reveal::resolve_tree`]):tier = 顶层块文档序(块间自上而下、不抢位),delay_ms =
+    /// 每容器 ordering 累加的编排时序;用调度器时钟(限速/放慢/可重放)按 (tier, 序) 释放尚未
+    /// 上屏的 display 字形,定其 `spawn_time = 释放时刻 + delay`(骨架先行:结构块字带 delay,
     /// 晚于即时入场的容器底/框)。瞬显块(catch-up)整段以 catch-up spawn 释放,绕过时钟。
     fn schedule(&mut self, dt_ms: f64) {
         self.scheduler.advance_clock(dt_ms);
@@ -679,11 +760,10 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             if view.spawn.iter().all(Option::is_some) {
                 continue;
             }
-            // 风格 → 逐 glyph tier/offset(0019 §4.2 在 0020 节点树上落地)。
-            let plan = reveal::resolve(
-                &reveal::style_for_block(&cache.nodes, table_style),
-                &cache.nodes,
-            );
+            // 风格 → 逐 glyph tier/offset(0019 §4.2 在 0020 节点树上落地)。**逐顶层块**各用自身
+            // 风格(标题/段落逐字、表格走风格、代码/列表/引用骨架),避免含表格的消息把整条当单块
+            // → 表格后的标题/段落被连坐永久 hold(c06-all 段间空白根因)。
+            let plan = reveal::resolve_tree(&cache.nodes, table_style);
             // 候选 = 已揭示(非 hold)且尚未上屏且非零墨换行;按 (tier, 序) 排 → 骨架/表头先于 body。
             let mut cand: Vec<usize> = (0..gcount)
                 .filter(|&g| {
@@ -884,6 +964,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         let mut rects: Vec<FrameRect> = Vec::new();
         let mut panels: Vec<FramePanel> = Vec::new();
         let mut visible_blocks = 0usize; // 可观测:实际出 glyph 的块数
+        let reveal_kind = self.scheduler.table_style(); // 表格揭示风格(驱动面板骨架揭示)
         for id in ids {
             let view = &self.views[id];
             let Some(cache) = &view.cache else { continue };
@@ -897,6 +978,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 block_top,
                 self.max_width,
                 &self.table_style,
+                &view.spawn,
+                reveal_kind,
                 &mut rects,
                 &mut panels,
             ); // 4B/6 装饰

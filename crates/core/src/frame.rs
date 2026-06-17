@@ -79,6 +79,10 @@ pub struct FramePanel {
     pub col_ratios: Vec<f32>,
     /// 横网格线 y(占框高比例 0..1)。
     pub row_ratios: Vec<f32>,
+    /// 纵向揭示比例(0..1,从框顶起):`<1` 时框高 `reveal` 以下不画(shader 裁切),用于表格揭示
+    /// 风格化骨架(0019 §2):整表骨架=释放即 1(空框先现)、行框=随已揭行逐步长大、原始=恒 1。
+    /// `1.0` = 整框可见(默认 / 原始逐字)。
+    pub reveal: f32,
     /// 退化/特性位:`PANEL_GRID`/`PANEL_AO`。
     pub flags: u32,
 }

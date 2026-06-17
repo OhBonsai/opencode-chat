@@ -101,71 +101,11 @@ pub fn block_kind(tree: &NodeTree) -> NodeKind {
     NodeKind::Paragraph
 }
 
-// ───────────────────────── 8B:揭示风格 = 纯数据(0019 §4.2)─────────────────────────
-
-/// 缓动标识(policy 引用;0016 morph 自带缓动,这里仅作数据携带)。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EaseId {
-    Linear,
-    CubicOut,
-}
-
-/// 选择子(0019 §4.2):在 [0020 节点树](crate::nodes)上按 kind/区间解析为**glyph 区间集**或
-/// **骨架**。`Cell(r,c)` 的 `u32::MAX` = 通配(任意行/列)。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Selector {
-    /// 按节点 kind 选其全部 glyph(通用形态)。
-    ByKind(NodeKind),
-    /// 整表外框骨架(面板;无 glyph)。
-    Frame,
-    /// 网格线骨架(面板;无 glyph)。
-    Grid,
-    /// 表头行各 cell 的字。
-    Header,
-    /// 第 r 行 c 列 cell 的字(`u32::MAX` = 通配)。
-    Cell(u32, u32),
-    /// 第 n 行的字(`u32::MAX` = 所有数据行)。
-    RowGlyphs(u32),
-    /// 块内所有字。
-    Glyphs,
-}
-
-/// stage 依赖边(0019 §4.2):相对哪个就绪点起算。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StageEdge {
-    Start,
-    End,
-}
-
-/// stage 的依赖(0019 §4.2 / §5 双门):内容门 / 布局门 / 兄弟 stage 边 / 立即。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dep {
-    /// 内容完整到某级(揭哪些字)。
-    ContentGate(RevealUnit),
-    /// 几何稳定到某级(列宽定 = 可精确画框)。
-    LayoutGate(RevealUnit),
-    /// 兄弟 stage(下标)的起/止边。
-    Stage(usize, StageEdge),
-    /// 立即(无门)。
-    Now,
-}
-
-/// 一个揭示 stage(0019 §4.2):选谁、依赖谁、延迟多少、时长、缓动。纯数据。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Stage {
-    pub select: Selector,
-    pub after: Dep,
-    pub offset_ms: f32,
-    pub dur_ms: f32,
-    pub ease: EaseId,
-}
-
-/// 一个揭示风格(0019 §4.2)= 就绪门 + 一组 stage(纯数据)。加风格 = 加一条,管线零改。
-#[derive(Clone, Debug, PartialEq)]
-pub struct RevealStyle {
-    pub gate: RevealUnit,
-    pub stages: Vec<Stage>,
-}
+// ───────────── 9A/9B:递归揭示 = 容器 ordering + 文档序 tier(Plan 9,替换 0019 §4.2 Selector 阶梯)─────────────
+//
+// Plan 8 的"全局 tier 阶梯 + 表格专用 Selector(Header/Cell/RowGlyphs)"已被本节的**嵌套集递归**
+// 收编(0→1 不留并行旧路):tier = 顶层块**文档序**(块间自上而下、不抢位),块内时序全靠
+// **每容器 ordering** 累加的 `delay_ms`,表格 3 风格 = Table/TableRow 的 ordering 预设。
 
 /// 用户可切的表格揭示风格(0019 §2 配置表三行;调试面板下拉)。默认 [`TableStyleKind::Full`]
 /// (作者最想要的"整表→网格→表头→cell")。
@@ -191,126 +131,92 @@ impl TableStyleKind {
     }
 }
 
-const D: f32 = 200.0; // 默认 stage 时长(ms)
-const HEADER_OFFSET: f32 = 60.0; // 网格→表头延迟(0019 §4.2 风格 3 示意)
-const SKELETON_OFFSET: f32 = 120.0; // 容器骨架→字延迟(骨架先行可见)
+// 编排时长常量(ms)。delay_ms 由这些沿递归累加,定 `spawn=释放时刻+delay` 的相对时序。
+const SKELETON_LEAD: f32 = 120.0; // 容器骨架(代码底/引用条/公式框)先现 → 字延后
+const GRID_LEAD: f32 = 200.0; // 整表网格骨架先现 → 表头/cell 延后
+const CELL_GAP: f32 = 8.0; // 整表 cell 间极小间隔(近"并行",方案 B 真并行后续)
+const ROW_FRAME_LEAD: f32 = 120.0; // 行框:每行框先现 → 该行字延后
+const ROW_GAP: f32 = 80.0; // 行框:行与行之间隔
+const ITEM_GAP: f32 = 60.0; // 列表项之间隔(逐项)
 
-/// 三种内置表格风格 = 0019 §4.2 配置表三行(纯数据)。
-pub fn table_style(kind: TableStyleKind) -> RevealStyle {
+/// 容器对其**子节点**的揭示排程(Plan 9 §2;0019 §4.2 风格的泛化)。方案 A:子项按**文档序**逐个。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ordering {
+    /// 子项按文档序逐个揭示,相邻隔 `gap_ms`(叶 = 逐字,gap 通常 0,靠配额/到达节奏逐字)。
+    Sequential { gap_ms: f32 },
+    /// 容器**骨架**(框/网格/底/左条)先现(占 `frame_ms` 前导),再按文档序排子项(隔 `gap_ms`)。
+    SkeletonThenChildren { frame_ms: f32, gap_ms: f32 },
+}
+
+impl Ordering {
+    fn gap_ms(self) -> f32 {
+        match self {
+            Ordering::Sequential { gap_ms } | Ordering::SkeletonThenChildren { gap_ms, .. } => {
+                gap_ms
+            }
+        }
+    }
+    /// 骨架前导(无骨架 = 0)。
+    fn frame_ms(self) -> f32 {
+        match self {
+            Ordering::SkeletonThenChildren { frame_ms, .. } => frame_ms,
+            Ordering::Sequential { .. } => 0.0,
+        }
+    }
+}
+
+/// 每 NodeKind 的默认 ordering(Plan 9 §2 表);表格 3 风格 = Table/TableRow 的 ordering 预设(§3)。
+/// `table` 仅影响 Table/TableRow/TableCell 子树。
+pub fn ordering_for(kind: NodeKind, table: TableStyleKind) -> Ordering {
     match kind {
-        // 风格 1:gate Glyph + 单 stage 逐字,无骨架(等价 0017 现状)。
-        TableStyleKind::Raw => RevealStyle {
-            gate: RevealUnit::Glyph,
-            stages: vec![Stage {
-                select: Selector::Glyphs,
-                after: Dep::ContentGate(RevealUnit::Glyph),
-                offset_ms: 0.0,
-                dur_ms: D,
-                ease: EaseId::CubicOut,
-            }],
-        },
-        // 风格 2:gate Row;每行框(布局门)→ 该行字。
-        TableStyleKind::RowFrame => RevealStyle {
-            gate: RevealUnit::Row(0),
-            stages: vec![
-                Stage {
-                    select: Selector::Frame,
-                    after: Dep::LayoutGate(RevealUnit::Row(0)),
-                    offset_ms: 0.0,
-                    dur_ms: D,
-                    ease: EaseId::CubicOut,
-                },
-                Stage {
-                    select: Selector::RowGlyphs(u32::MAX),
-                    after: Dep::Stage(0, StageEdge::End),
-                    offset_ms: 0.0,
-                    dur_ms: D,
-                    ease: EaseId::CubicOut,
-                },
-            ],
-        },
-        // 风格 3:gate Block;网格 → 表头 → 各 cell(并行)。
-        TableStyleKind::Full => RevealStyle {
-            gate: RevealUnit::Block,
-            stages: vec![
-                Stage {
-                    select: Selector::Grid,
-                    after: Dep::LayoutGate(RevealUnit::Block),
-                    offset_ms: 0.0,
-                    dur_ms: D,
-                    ease: EaseId::CubicOut,
-                },
-                Stage {
-                    select: Selector::Header,
-                    after: Dep::Stage(0, StageEdge::End),
-                    offset_ms: HEADER_OFFSET,
-                    dur_ms: D,
-                    ease: EaseId::CubicOut,
-                },
-                Stage {
-                    select: Selector::Cell(u32::MAX, u32::MAX),
-                    after: Dep::Stage(1, StageEdge::End),
-                    offset_ms: 0.0,
-                    dur_ms: D,
-                    ease: EaseId::CubicOut,
-                },
-            ],
-        },
-    }
-}
-
-/// 纯文本/标题/行内默认风格:逐字 fade(实时感,速度可调;等价现状,DoD #5)。
-pub fn text_style() -> RevealStyle {
-    RevealStyle {
-        gate: RevealUnit::Glyph,
-        stages: vec![Stage {
-            select: Selector::Glyphs,
-            after: Dep::ContentGate(RevealUnit::Glyph),
-            offset_ms: 0.0,
-            dur_ms: D,
-            ease: EaseId::CubicOut,
-        }],
-    }
-}
-
-/// 非表格结构块(代码/列表/引用)默认风格:**骨架先行**——容器(底/条)先入场,字延后。
-pub fn skeleton_style() -> RevealStyle {
-    RevealStyle {
-        gate: RevealUnit::Line,
-        stages: vec![
-            Stage {
-                select: Selector::Frame,
-                after: Dep::LayoutGate(RevealUnit::Glyph),
-                offset_ms: 0.0,
-                dur_ms: D,
-                ease: EaseId::CubicOut,
+        // 根 / 段落 / 标题 / HTML:逐字,无骨架、无间隔(纯文本不回归,DoD #5)。
+        NodeKind::Doc | NodeKind::Paragraph | NodeKind::Heading | NodeKind::HtmlBlock => {
+            Ordering::Sequential { gap_ms: 0.0 }
+        }
+        // 列表:逐项(项间 gap);嵌套 List 递归 → 逐层逐项。
+        NodeKind::List | NodeKind::ListItem => Ordering::Sequential { gap_ms: ITEM_GAP },
+        // 代码 / 引用 / 公式:骨架(底/条/框)先现 → 字。
+        NodeKind::CodeBlock | NodeKind::Quote | NodeKind::MathDisplay => {
+            Ordering::SkeletonThenChildren {
+                frame_ms: SKELETON_LEAD,
+                gap_ms: 0.0,
+            }
+        }
+        // 表格:按 3 风格预设(§3)。
+        NodeKind::Table => match table {
+            TableStyleKind::Raw => Ordering::Sequential { gap_ms: 0.0 },
+            TableStyleKind::RowFrame => Ordering::Sequential { gap_ms: ROW_GAP },
+            TableStyleKind::Full => Ordering::SkeletonThenChildren {
+                frame_ms: GRID_LEAD,
+                gap_ms: CELL_GAP,
             },
-            Stage {
-                select: Selector::Glyphs,
-                after: Dep::Stage(0, StageEdge::End),
-                offset_ms: SKELETON_OFFSET,
-                dur_ms: D,
-                ease: EaseId::CubicOut,
+        },
+        NodeKind::TableRow => match table {
+            // 行框:每行先画框 → 该行字。整表/原始:行内 cell 顺序(整表近"并行"小 gap)。
+            TableStyleKind::RowFrame => Ordering::SkeletonThenChildren {
+                frame_ms: ROW_FRAME_LEAD,
+                gap_ms: 0.0,
             },
-        ],
+            TableStyleKind::Full => Ordering::Sequential { gap_ms: CELL_GAP },
+            TableStyleKind::Raw => Ordering::Sequential { gap_ms: 0.0 },
+        },
+        // cell / 其余容器:逐字。
+        _ => Ordering::Sequential { gap_ms: 0.0 },
     }
 }
 
-/// 选定块的揭示风格(0019 §4.2):表格用用户选的 3 风格之一;代码/列表/引用骨架先行;
-/// 段落/标题/行内逐字。Selector 由 [`resolve`] 在节点树上落地。
-pub fn style_for_block(tree: &NodeTree, table: TableStyleKind) -> RevealStyle {
-    match block_kind(tree) {
-        NodeKind::Table => table_style(table),
-        NodeKind::CodeBlock | NodeKind::List | NodeKind::Quote => skeleton_style(),
-        _ => text_style(),
-    }
+/// 是否**无字块**(走 NodeSpawn,§2.6):整块/节点级淡入,无逐字 glyph 编排。
+/// `ThematicBreak`(单零墨 Rule)与 `Embed`(图片/公式/mermaid 占位)目前归此类。
+pub fn is_nodespawn(kind: NodeKind) -> bool {
+    matches!(kind, NodeKind::ThematicBreak | NodeKind::Embed)
 }
 
-/// 风格在节点树上落地的结果(0019 §4.3 sched 的输入):每块内 glyph 的揭示层级 + 绝对延迟。
-/// `tier[g]`:**释放序**(越小越早;`u32::MAX` = 未选中 = hold/不揭示)——限速时低 tier 先释放。
-/// `delay_ms[g]`:相对"该块开揭"的**绝对延迟** = 前序 stage 时长累加(`after: Stage(prev).End`)+
-/// 本 stage `offset_ms`;调度器据此定 `spawn_time`,使高 tier 即便同帧释放也淡入更晚(骨架→表头→
-/// body 有序)。`skeleton_first`:是否有骨架(Frame/Grid)stage 先于字。
+/// 递归揭示落地结果(Plan 9 §2 / 0019 §4.3 sched 输入):逐 glyph 的释放序 + 绝对延迟。
+/// - `tier[g]`:**释放序 = 顶层块的文档序下标**(`u32::MAX` = hold/未揭)。块间据此严格自上而下、
+///   互不抢位(根治"靠后块跳到靠前块之前");块内细序由 `g`(= 文档序 glyph 下标)兜底。
+/// - `delay_ms[g]`:容器 ordering 沿递归累加的**绝对延迟**(骨架前导 + 逐项/逐行 gap);定
+///   `spawn = 释放时刻 + delay`,使骨架→表头→body / 逐项 有序淡入(0016 morph 据此)。
+/// - `skeleton_first`:子树含 `SkeletonThenChildren`(骨架先行)。
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphPlan {
     pub tier: Vec<u32>,
@@ -325,90 +231,27 @@ impl GlyphPlan {
     }
 }
 
-/// 把一个 [`RevealStyle`] 在节点树上解析成逐 glyph 的揭示层级 + 偏移(0019 §4.2 Selector → 端点)。
-/// stage 在 `style.stages` 里**已按依赖序**排列(built-in 风格保证),故 tier = stage 下标;后写
-/// 覆盖前写(Header 先标表头字,Cell 通配再标其余 body 字,互不重叠)。表格行/cell 由 TableRow/
-/// TableCell 节点的文档序定位。
-pub fn resolve(style: &RevealStyle, tree: &NodeTree) -> GlyphPlan {
+/// **递归揭示**(Plan 9 §2 替换 Plan 8 全局 tier/Selector):在 [0020 嵌套集节点树](crate::nodes)上
+/// 自根 DFS——每容器按其 [`Ordering`] 排子节点(文档序),骨架先行的容器留前导延迟,叶(Run/Glyph)
+/// 逐字。**tier = 顶层块文档序**(块间自上而下、不拖累);**delay_ms = 沿途累加的编排时序**。
+/// `table` 选表格 3 风格预设。调度器([`crate::app::Engine::schedule`])用此函数。
+pub fn resolve_tree(tree: &NodeTree, table: TableStyleKind) -> GlyphPlan {
     let total = tree.root().map_or(0, |r| r.range.1) as usize;
     let mut tier = vec![u32::MAX; total];
     let mut delay_ms = vec![0.0f32; total];
     let mut skeleton_first = false;
-
-    // 表格行(文档序)→ 各行的 cell 节点。
-    let rows: Vec<u32> = tree
-        .nodes_of_kind(NodeKind::TableRow)
-        .map(|(i, _)| i)
-        .collect();
-    let cells_of = |row_idx: u32| -> Vec<(u32, u32)> {
-        tree.children(row_idx)
-            .filter(|&c| tree.nodes()[c as usize].kind == NodeKind::TableCell)
-            .map(|c| tree.nodes()[c as usize].range)
-            .collect()
-    };
-    let mark = |tier: &mut [u32], delay_ms: &mut [f32], range: (u32, u32), t: u32, d: f32| {
-        for g in range.0..range.1 {
-            if let (Some(tt), Some(dd)) = (tier.get_mut(g as usize), delay_ms.get_mut(g as usize)) {
-                *tt = t;
-                *dd = d;
-            }
-        }
-    };
-
-    // 绝对延迟链(0019 §4.2 `after: Stage(prev).End`):各 stage 起点 = 前序 stage 时长累加;
-    // 本 stage glyph 的延迟 = 起点 + 自身 offset。骨架 stage(无 glyph)也占一段时长 → 字延后。
-    let mut cumulative = 0.0f32;
-    for (si, stage) in style.stages.iter().enumerate() {
-        let t = si as u32;
-        let d = cumulative + stage.offset_ms;
-        match stage.select {
-            Selector::Frame | Selector::Grid => skeleton_first = true,
-            Selector::Glyphs => {
-                for g in 0..total {
-                    tier[g] = t;
-                    delay_ms[g] = d;
-                }
-            }
-            Selector::ByKind(kind) => {
-                for (_, n) in tree.nodes_of_kind(kind) {
-                    mark(&mut tier, &mut delay_ms, n.range, t, d);
-                }
-            }
-            Selector::Header => {
-                if let Some(&r0) = rows.first() {
-                    for cr in cells_of(r0) {
-                        mark(&mut tier, &mut delay_ms, cr, t, d);
-                    }
-                }
-            }
-            Selector::Cell(rsel, csel) => {
-                for (ri, &row) in rows.iter().enumerate() {
-                    if rsel != u32::MAX && rsel != ri as u32 {
-                        continue;
-                    }
-                    // 通配 body cell 时跳过表头行(已由 Header stage 标)。
-                    if rsel == u32::MAX && ri == 0 {
-                        continue;
-                    }
-                    for (ci, cr) in cells_of(row).into_iter().enumerate() {
-                        if csel != u32::MAX && csel != ci as u32 {
-                            continue;
-                        }
-                        mark(&mut tier, &mut delay_ms, cr, t, d);
-                    }
-                }
-            }
-            Selector::RowGlyphs(nsel) => {
-                for (ri, &row) in rows.iter().enumerate() {
-                    if nsel != u32::MAX && nsel != ri as u32 {
-                        continue;
-                    }
-                    let rng = tree.nodes()[row as usize].range;
-                    mark(&mut tier, &mut delay_ms, rng, t, d);
-                }
-            }
-        }
-        cumulative += stage.dur_ms;
+    // 顶层块 = 根 Doc 直接子;每块一个 tier(= 文档序块下标),块内 delay 由递归编排。
+    for (bi, b) in tree.children(0).enumerate() {
+        resolve_node(
+            tree,
+            b,
+            table,
+            bi as u32,
+            0.0,
+            &mut tier,
+            &mut delay_ms,
+            &mut skeleton_first,
+        );
     }
     GlyphPlan {
         tier,
@@ -417,11 +260,70 @@ pub fn resolve(style: &RevealStyle, tree: &NodeTree) -> GlyphPlan {
     }
 }
 
+/// 递归排一个节点的揭示,返回其揭示**结束延迟**(供兄弟接续)。叶(Run/Glyph)按 `start_delay`
+/// 标其区间所有 glyph;容器按 [`Ordering`]:骨架先行留前导,子节点按文档序递归、相邻加 gap。
+/// 无字块(`is_nodespawn`)不标 glyph(NodeSpawn:面板/装饰按节点淡入,§2.6),仅占骨架前导。
+#[allow(clippy::too_many_arguments)] // reason: 递归需树/节点/风格/块tier/游标/双输出/骨架旗,拆 struct 反绕
+fn resolve_node(
+    tree: &NodeTree,
+    idx: u32,
+    table: TableStyleKind,
+    block_tier: u32,
+    start_delay: f32,
+    tier: &mut [u32],
+    delay_ms: &mut [f32],
+    skeleton_first: &mut bool,
+) -> f32 {
+    let node = tree.nodes()[idx as usize];
+    // 叶:逐字标该区间(tier=块文档序,delay=当前游标)。
+    if matches!(node.kind, NodeKind::Run | NodeKind::Glyph) {
+        for g in node.range.0..node.range.1 {
+            if let (Some(tt), Some(dd)) = (tier.get_mut(g as usize), delay_ms.get_mut(g as usize)) {
+                *tt = block_tier;
+                *dd = start_delay;
+            }
+        }
+        return start_delay;
+    }
+    // 无字块(分隔线/Embed):NodeSpawn,不逐字;占位返回(装饰/面板按节点淡入)。
+    if is_nodespawn(node.kind) {
+        return start_delay;
+    }
+    let ordering = ordering_for(node.kind, table);
+    let mut delay = start_delay;
+    if ordering.frame_ms() > 0.0 {
+        *skeleton_first = true;
+        delay += ordering.frame_ms(); // 骨架先行:子项延后
+    }
+    let gap = ordering.gap_ms();
+    // 子节点按文档序(append-only build ⇒ children 已按 range.start);递归。
+    let children: Vec<u32> = tree.children(idx).collect();
+    for child in children {
+        delay = resolve_node(
+            tree,
+            child,
+            table,
+            block_tier,
+            delay,
+            tier,
+            delay_ms,
+            skeleton_first,
+        );
+        delay += gap;
+    }
+    delay
+}
+
 // ───────────────────────── 8C:揭示调度器 = 解耦的揭示时钟(0019 §4.3 + 北极星)─────────────────────────
 
 /// 默认揭示速率(display glyph/秒):`INFINITY` = **跟内容到达**(不限速),等价 0017 现状的逐字
 /// (DoD #5:纯文本不回归)。调慢到有限值即限速;放慢因子再乘,刻意拉慢让揭示被看见。
 pub const DEFAULT_REVEAL_CPS: f32 = f32::INFINITY;
+
+/// `reveal_cps` 不限速(默认)但用户**只调了放慢因子**(`slow < 1`,北极星"刻意放慢")时的
+/// 基准速率(display glyph/秒)。否则 `INFINITY * slow = INFINITY` → 放慢无效(速度档点了没反应)。
+/// 取一个"看得清揭示过程"的基准;`正常`(slow==1)仍走不限速,纯文本不回归。
+const SLOW_BASE_CPS: f32 = 80.0;
 
 /// 揭示调度器(0019 §4.3 sched):**唯一**揭示路径——收编"grapheme 到达即 `spawn_time=now`"的
 /// 即时揭示(0017),改由调度器按**自有时钟**(注入 `dt_ms`,可重放)释放 glyph、产 `spawn_time`。
@@ -480,17 +382,28 @@ impl RevealScheduler {
         self.table_style
     }
 
-    /// 是否限速(有限速率)。
+    /// 是否限速:`reveal_cps` 有限,**或**仅放慢(`slow < 1`)——后者用 [`SLOW_BASE_CPS`] 作基准,
+    /// 否则不限速时放慢因子被 `INFINITY` 吞掉、速度档无效。
     pub fn is_rate_limited(&self) -> bool {
-        self.reveal_cps.is_finite()
+        self.reveal_cps.is_finite() || self.slow < 1.0
+    }
+
+    /// 当前生效基准速率(glyph/秒):限速取 `reveal_cps`;仅放慢则取 [`SLOW_BASE_CPS`]。
+    fn base_cps(&self) -> f32 {
+        if self.reveal_cps.is_finite() {
+            self.reveal_cps
+        } else {
+            SLOW_BASE_CPS
+        }
     }
 
     /// 推进时钟 `dt_ms`,累加限速预算(不限速时空操作)。确定性:同 dt 序列 → 同预算(R8/R9)。
     pub fn advance_clock(&mut self, dt_ms: f64) {
         if self.is_rate_limited() {
-            self.budget += self.reveal_cps * self.slow * (dt_ms as f32) / 1000.0;
+            let rate = self.base_cps() * self.slow;
+            self.budget += rate * (dt_ms as f32) / 1000.0;
             // 限速突发上限:攒够约 0.25s 即封顶,空转后不一次倾泻(同 smoother 精神)。
-            let cap = (self.reveal_cps * self.slow * 0.25).max(1.0);
+            let cap = (rate * 0.25).max(1.0);
             self.budget = self.budget.min(cap);
         }
     }
@@ -561,83 +474,134 @@ mod tests {
         assert!(!is_structural(NodeKind::Run));
     }
 
-    #[test]
-    fn three_table_styles_have_expected_stage_order() {
-        // 风格 1:单 stage 逐字,无骨架。
-        let raw = table_style(TableStyleKind::Raw);
-        assert_eq!(raw.stages.len(), 1);
-        assert_eq!(raw.stages[0].select, Selector::Glyphs);
-        // 风格 2:框 → 行字。
-        let rf = table_style(TableStyleKind::RowFrame);
-        assert_eq!(rf.stages.len(), 2);
-        assert_eq!(rf.stages[0].select, Selector::Frame);
-        assert!(matches!(rf.stages[1].select, Selector::RowGlyphs(_)));
-        assert_eq!(rf.stages[1].after, Dep::Stage(0, StageEdge::End));
-        // 风格 3:网格 → 表头 → cell(链式依赖)。
-        let full = table_style(TableStyleKind::Full);
-        assert_eq!(full.stages.len(), 3);
-        assert_eq!(full.stages[0].select, Selector::Grid);
-        assert_eq!(full.stages[1].select, Selector::Header);
-        assert!(matches!(full.stages[2].select, Selector::Cell(_, _)));
-        assert_eq!(full.stages[2].after, Dep::Stage(1, StageEdge::End));
+    // (tree, display clusters) —— 便于按字符定位 glyph 下标查 delay/tier。
+    fn tree_and_clusters(src: &str) -> (NodeTree, Vec<String>) {
+        let (spans, _t, tree) = crate::content::parse_markdown_nodes(src, 0);
+        let mut clusters = Vec::new();
+        for s in &spans {
+            for g in crate::support::graphemes(s.text()) {
+                clusters.push(g.to_owned());
+            }
+        }
+        (tree, clusters)
     }
 
     #[test]
-    fn style_for_block_picks_by_kind() {
-        let table = table_tree();
+    fn ordering_defaults_by_kind() {
+        // 9B:每 NodeKind 默认 ordering(方案 A)。
+        let t = TableStyleKind::Full;
         assert_eq!(
-            style_for_block(&table, TableStyleKind::Full).gate,
-            RevealUnit::Block
+            ordering_for(NodeKind::Paragraph, t),
+            Ordering::Sequential { gap_ms: 0.0 }
         );
-        let code = crate::content::parse_markdown_nodes("```\nx\n```", 0).2;
+        assert!(matches!(
+            ordering_for(NodeKind::List, t),
+            Ordering::Sequential { gap_ms } if gap_ms > 0.0
+        ));
+        assert!(matches!(
+            ordering_for(NodeKind::CodeBlock, t),
+            Ordering::SkeletonThenChildren { .. }
+        ));
+        // 表格 3 预设:Raw=Sequential 无 gap、RowFrame=行 gap、Full=骨架先行。
         assert_eq!(
-            style_for_block(&code, TableStyleKind::Full),
-            skeleton_style()
+            ordering_for(NodeKind::Table, TableStyleKind::Raw),
+            Ordering::Sequential { gap_ms: 0.0 }
         );
-        let para = crate::content::parse_markdown_nodes("just text", 0).2;
-        assert_eq!(style_for_block(&para, TableStyleKind::Full), text_style());
+        assert!(matches!(
+            ordering_for(NodeKind::Table, TableStyleKind::Full),
+            Ordering::SkeletonThenChildren { .. }
+        ));
+        // 行框:TableRow 骨架先行(每行框);整表:TableRow 顺序。
+        assert!(matches!(
+            ordering_for(NodeKind::TableRow, TableStyleKind::RowFrame),
+            Ordering::SkeletonThenChildren { .. }
+        ));
+        assert!(matches!(
+            ordering_for(NodeKind::TableRow, TableStyleKind::Full),
+            Ordering::Sequential { .. }
+        ));
+        // 无字块走 NodeSpawn。
+        assert!(is_nodespawn(NodeKind::ThematicBreak));
+        assert!(is_nodespawn(NodeKind::Embed));
+        assert!(!is_nodespawn(NodeKind::Paragraph));
     }
 
     #[test]
-    fn resolve_full_table_header_before_body() {
-        // 风格 3:Grid(骨架先行)→ Header(tier 1)→ body cell(tier 2)。
-        let tree = table_tree();
-        let plan = resolve(&table_style(TableStyleKind::Full), &tree);
-        assert!(plan.skeleton_first, "整表风格应骨架先行");
-        // 表头字 'A'/'B' 在 tier 1;数据字 '1'/'3' 在 tier 2(晚于表头)。
-        // glyph 0 = 第一格表头 'A'。
-        assert_eq!(plan.tier[0], 1, "表头 tier=1");
-        // 找一个数据 cell glyph(tier 2)。
-        assert!(plan.tier.contains(&2), "应有 body cell 在 tier 2(晚于表头)");
-        // 表头偏移 = HEADER_OFFSET(>0,网格后)。
-        assert!(plan.delay_ms[0] > 0.0, "表头延迟>0(网格 stage 之后)");
-        // body cell 延迟 > 表头延迟(tier 2 在表头之后,有序)。
-        let header_delay = plan.delay_ms[0];
+    fn resolve_tree_tiers_are_document_order_no_cross_block_jump() {
+        // 9A DoD #1:tier = 顶层块文档序 → 靠后块 tier 更大,绝不抢到靠前块之前。
+        let (tree, clusters) = tree_and_clusters("# 一\n\npara\n\n## 二");
+        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let idx = |c: &str| clusters.iter().position(|x| x == c).expect("char");
+        // 标题"一"(块0)< 段落"p"(块1)< 标题"二"(块2)。
+        let t1 = plan.tier[idx("一")];
+        let tp = plan.tier[idx("p")];
+        let t2 = plan.tier[idx("二")];
+        assert!(t1 < tp && tp < t2, "tier 应严格文档序: {t1} {tp} {t2}");
+        // 全部揭示(无 hold)。
         assert!(
-            plan.delay_ms
-                .iter()
-                .zip(&plan.tier)
-                .any(|(&d, &t)| t == 2 && d > header_delay),
-            "body cell 延迟应晚于表头"
+            (0..clusters.len()).all(|g| plan.revealed(g) || clusters[g] == "\n"),
+            "所有非换行字应揭示(无连坐 hold)"
         );
     }
 
     #[test]
-    fn resolve_raw_table_all_tier_zero_no_skeleton() {
+    fn resolve_tree_full_table_skeleton_header_before_body() {
+        // 9B/§3 整表:骨架先行;表头(文档序在前)delay < body。
         let tree = table_tree();
-        let plan = resolve(&table_style(TableStyleKind::Raw), &tree);
-        assert!(!plan.skeleton_first, "raw 风格无骨架");
-        assert!(plan.tier.iter().all(|&t| t == 0), "raw 全 tier 0 逐字");
+        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        assert!(plan.skeleton_first, "整表风格应骨架先行");
+        // glyph 0 = 表头首格 'A';其 delay = 网格前导(>0)。
+        assert!(plan.delay_ms[0] >= GRID_LEAD, "表头在网格骨架之后");
+        // body(后续行)delay 严格大于表头。
+        let max_delay = plan.delay_ms.iter().copied().fold(0.0_f32, f32::max);
+        assert!(max_delay > plan.delay_ms[0], "body cell 晚于表头");
+        // 单块表格 → 已揭字 tier 全相同(同一顶层块;换行零墨 hold 不计)。
+        assert!(
+            plan.tier
+                .iter()
+                .filter(|&&t| t != u32::MAX)
+                .all(|&t| t == 0),
+            "表格是单顶层块 → 已揭字 tier 全 0"
+        );
     }
 
     #[test]
-    fn resolve_text_style_all_revealed_tier_zero() {
+    fn resolve_tree_raw_table_no_skeleton_zero_delay() {
+        let tree = table_tree();
+        let plan = resolve_tree(&tree, TableStyleKind::Raw);
+        assert!(!plan.skeleton_first, "raw 风格无骨架");
+        assert!(
+            plan.delay_ms.iter().all(|&d| d == 0.0),
+            "raw 全零延迟(逐字)"
+        );
+    }
+
+    #[test]
+    fn resolve_tree_text_all_revealed_zero_delay() {
         let tree = crate::content::parse_markdown_nodes("hello world", 0).2;
-        let plan = resolve(&text_style(), &tree);
+        let plan = resolve_tree(&tree, TableStyleKind::Full);
         assert!(!plan.skeleton_first);
         let total = tree.root().map_or(0, |r| r.range.1) as usize;
         assert!((0..total).all(|g| plan.revealed(g)), "纯文本全部揭示");
-        assert!(plan.tier.iter().all(|&t| t == 0));
+        assert!(
+            plan.delay_ms.iter().all(|&d| d == 0.0),
+            "纯文本零编排延迟(不回归)"
+        );
+    }
+
+    #[test]
+    fn resolve_tree_nested_list_depth_first_doc_order() {
+        // 9D:嵌套列表逐项,深度优先文档序;a < a1(嵌套子项)< b。
+        let (tree, clusters) = tree_and_clusters("- a\n  - a1\n- b");
+        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        let d = |c: &str| plan.delay_ms[clusters.iter().position(|x| x == c).expect("char")];
+        assert!(d("a") < d("b"), "项 a 应早于项 b: {} {}", d("a"), d("b"));
+        // 'a1' 的 '1'(嵌套子项)在 a 之后、b 之前(深度优先)。
+        let a1 = plan.delay_ms[clusters.iter().position(|x| x == "1").expect("a1")];
+        assert!(
+            d("a") < a1 && a1 < d("b"),
+            "嵌套项应深度优先夹在 a 与 b 之间"
+        );
     }
 
     #[test]
@@ -696,20 +660,33 @@ mod tests {
     }
 
     #[test]
-    fn resolve_skeleton_glyphs_after_frame() {
-        // 代码块骨架先行:Frame stage(tier 0,骨架)→ Glyphs(tier 1,带 offset)。
-        let tree = crate::content::parse_markdown_nodes("```\nlet x=1;\n```", 0).2;
-        let plan = resolve(&skeleton_style(), &tree);
-        assert!(plan.skeleton_first, "代码块骨架先行");
-        // 所有字在 tier 1(Frame stage 不占 glyph),带骨架偏移。
-        let total = tree.root().map_or(0, |r| r.range.1) as usize;
+    fn slow_alone_engages_rate_limit() {
+        // 回归:默认 reveal_cps=∞ 时,只调放慢因子也应限速(否则 ∞×slow=∞,速度档点了没反应)。
+        let mut s = RevealScheduler::new();
+        assert!(!s.is_rate_limited(), "默认正常速 → 不限速");
+        s.set_slow(0.1);
         assert!(
-            (0..total).all(|g| plan.tier[g] == 1),
-            "字在骨架之后(tier 1)"
+            s.is_rate_limited(),
+            "放慢 0.1× → 应启用限速(SLOW_BASE_CPS 基准)"
         );
+        s.advance_clock(100.0);
+        // SLOW_BASE_CPS(80)×0.1×0.1s = 0.8 → 本帧 0 个(攒着),证明确实被放慢。
+        assert!(s.quota() < 5, "极慢档配额应很小: {}", s.quota());
+        // 恢复正常 → 回到不限速。
+        s.set_slow(1.0);
+        assert!(!s.is_rate_limited(), "正常速 → 不限速(纯文本不回归)");
+    }
+
+    #[test]
+    fn resolve_tree_skeleton_code_chars_delayed() {
+        // 代码块骨架先行:底先现(SKELETON_LEAD 前导)→ 码字带延迟。
+        let tree = crate::content::parse_markdown_nodes("```\nlet x=1;\n```", 0).2;
+        let plan = resolve_tree(&tree, TableStyleKind::Full);
+        assert!(plan.skeleton_first, "代码块骨架先行");
+        // 码字延迟 ≥ 骨架前导(底/框先于字)。
         assert!(
-            plan.delay_ms.iter().any(|&o| o > 0.0),
-            "字有骨架延迟(底/框先行)"
+            plan.delay_ms.iter().any(|&d| d >= SKELETON_LEAD),
+            "码字应带骨架延迟(底先于字)"
         );
     }
 }

@@ -192,7 +192,7 @@ fn is_pending_structure(block: &Block) -> bool {
 /// - 表格:确认成 `Table` → [`RevealUnit::Row`]`(行数)`;成形中(未确认)由 [`is_pending_structure`] 抑制。
 pub fn content_gate(src: &str) -> crate::reveal::RevealUnit {
     use crate::reveal::RevealUnit;
-    let patched = remend(&mark_alerts(src));
+    let patched = prepare_stream(src);
     let doc = jcode_parse(&patched);
     match doc.blocks.last() {
         None => RevealUnit::Block,
@@ -249,13 +249,18 @@ pub fn parse_markdown_nodes(
 /// `jcode` 块类型 → 节点 kind(0020)。
 fn block_node_kind(block: &Block) -> crate::nodes::NodeKind {
     use crate::nodes::NodeKind;
+    // Plan 9 §9.0:逐一映射(去掉 `_ => Paragraph` 吞并)——分隔线/显示公式/HTML 各有独立 kind,
+    // 递归揭示(Plan 9)据 kind 选 ordering / NodeSpawn,不再当段落。
     match &block.kind {
         BlockKind::Heading { .. } => NodeKind::Heading,
         BlockKind::CodeBlock { .. } => NodeKind::CodeBlock,
         BlockKind::BlockQuote => NodeKind::Quote,
         BlockKind::ListItem { .. } => NodeKind::ListItem,
         BlockKind::Table => NodeKind::Table,
-        _ => NodeKind::Paragraph, // Paragraph / ThematicBreak / MathDisplay / Html
+        BlockKind::MathDisplay => NodeKind::MathDisplay,
+        BlockKind::ThematicBreak => NodeKind::ThematicBreak,
+        BlockKind::Html => NodeKind::HtmlBlock,
+        BlockKind::Paragraph => NodeKind::Paragraph,
     }
 }
 
@@ -275,7 +280,7 @@ fn emit_doc(
     Vec<TableRegion>,
     Vec<crate::nodes::BlockSpec>,
 ) {
-    let patched = remend(&mark_alerts(src));
+    let patched = prepare_stream(src);
     let doc = jcode_parse(&patched);
     let mut out: Vec<StyledSpan> = Vec::new();
     let mut tables: Vec<TableRegion> = Vec::new();
@@ -527,6 +532,69 @@ fn push_text(out: &mut Vec<StyledSpan>, text: &str, role: StyleRole, strike: boo
             out.push(StyledSpan::styled(line, role, strike));
         }
     }
+}
+
+/// 剥掉流式尾部"成形中"的行内链接/图片:最后一个 `](` 之后若还没有 `)`,说明链接正在键入,
+/// 此刻放行会先以字面 `[文字](ur` 上屏、`)` 到达后塌成纯文本 → 闪烁。闭合前从开启它的 `[`
+/// (含图片前缀 `!`)处截断,**只裁尾**(前文照常上屏);`)` 到达后整条链接(纯文本)再现,无闪。
+/// `](` 是强链接信号,裸 `](` 出现在纯文本里极少,误伤可忽略(0019 raw 抑制,Plan 8 #3)。
+fn strip_forming_link(src: &str) -> &str {
+    let Some(p) = src.rfind("](") else {
+        return src;
+    };
+    if src[p + 2..].contains(')') {
+        return src; // 链接已闭合 → 不动
+    }
+    let Some(b) = src[..p].rfind('[') else {
+        return src;
+    };
+    let start = if b > 0 && src.as_bytes()[b - 1] == b'!' {
+        b - 1
+    } else {
+        b
+    };
+    &src[..start]
+}
+
+/// 解析前的流式原文预处理管线(0004 §5.1,AR9):
+/// ① [`mark_alerts`] 告警哨兵 → ② [`isolate_table_from_paragraph`] 段落/表格隔行
+/// → ③ [`strip_forming_link`] 成形中链接裁尾 → ④ [`remend`] 未闭合标记补全。
+/// `content_gate` 与 `emit_doc` 共用此管线,保证门判定与实际揭示对同一份规整化原文。
+fn prepare_stream(src: &str) -> String {
+    let alerted = mark_alerts(src);
+    let isolated = isolate_table_from_paragraph(&alerted);
+    remend(strip_forming_link(&isolated))
+}
+
+/// pulldown-cmark 不让"轻表格"打断段落;"重表格"(行首 `|`)虽能打断,却会**丢掉表格正上方那行段落**
+/// (raphlinus/pulldown-cmark#420)。流式里 `**X 组**` 紧贴表头时该标签整行消失。
+/// 此处发现"分隔行之上是表头、表头之上是非空且非表格行"时,在段落与表头间补一个空行,
+/// 使 pulldown 把段落当独立块、表格独立成块(两者都保留)。
+fn isolate_table_from_paragraph(src: &str) -> String {
+    let lines: Vec<&str> = src.split('\n').collect();
+    let is_delim = |s: &str| {
+        let t = s.trim();
+        !t.is_empty() && t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+    };
+    let is_table_row = |s: &str| s.trim_start().starts_with('|') || is_delim(s);
+    let mut out = String::with_capacity(src.len() + 8);
+    for (i, &line) in lines.iter().enumerate() {
+        // 当前行是表头(含 `|` 且下一行为分隔行),且上一行是非空、非表格的段落 → 先补空行隔开。
+        if i >= 1
+            && i + 1 < lines.len()
+            && line.contains('|')
+            && is_delim(lines[i + 1])
+            && !lines[i - 1].trim().is_empty()
+            && !is_table_row(lines[i - 1])
+        {
+            out.push('\n');
+        }
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// 尾部"主动补全"未闭合的行内/块语法,消除流式半截标记闪烁(0004 §5.1,AR9)。
@@ -832,6 +900,52 @@ mod tests {
     }
 
     #[test]
+    fn bold_label_above_table_survives() {
+        // 回归:`**I 组**` 紧贴重表格(行首 `|`)无空行 → pulldown 会丢掉表前段落
+        // (pulldown-cmark#420)。`isolate_table_from_paragraph` 插空行后,标签与表格都在。
+        let md = "**I 组**\n| 比赛 | 北京时间 |\n|------|---------|\n| 葡萄牙 | 01:00 |";
+        let (spans, tables, _) = parse_markdown_nodes(md, 0);
+        let r = render(&spans);
+        assert!(r.contains("I 组"), "表前粗体标签应保留: {r}");
+        assert_eq!(
+            role_of(&spans, "I 组"),
+            Some(StyleRole::Bold),
+            "应为粗体: {r}"
+        );
+        assert_eq!(tables.len(), 1, "表格仍应被识别为一个表");
+        assert!(r.contains("葡萄牙"), "表格内容应在: {r}");
+    }
+
+    #[test]
+    fn forming_link_tail_suppressed() {
+        // Plan 8 #3:流式半截链接/图片(`](` 未闭合)不闪字面 `[文字](ur`;前文照常上屏。
+        let pending = render(&parse_markdown("see [docs](http://exa"));
+        assert!(pending.contains("see"), "链接前的文本应上屏: {pending}");
+        assert!(!pending.contains('['), "成形中链接的 [ 不应泄漏: {pending}");
+        assert!(
+            !pending.contains("]("),
+            "成形中链接的 ]( 不应泄漏: {pending}"
+        );
+        assert!(!pending.contains("exa"), "URL 不应泄漏: {pending}");
+        // 图片同理(`![alt](` 前缀也被裁)。
+        let img = render(&parse_markdown("a ![cat](http://i"));
+        assert!(
+            !img.contains('!') && !img.contains('['),
+            "成形中图片不应泄漏: {img}"
+        );
+        // `)` 到达 → 整条链接(纯文本)再现,无残留标记。
+        let closed = render(&parse_markdown("see [docs](http://example.com)"));
+        assert!(closed.contains("docs"), "闭合后应显示链接文字: {closed}");
+        assert!(
+            !closed.contains('[') && !closed.contains("]("),
+            "闭合后无标记残留: {closed}"
+        );
+        // 无链接的裸文本不受影响。
+        let plain = render(&parse_markdown("just normal text"));
+        assert_eq!(plain.trim(), "just normal text");
+    }
+
+    #[test]
     fn table_alignment_in_region() {
         // 5E.1 #1:对齐从 jcode 带出到 TableRegion.aligns(L/C/R = 0/1/2),布局由 JS 像素两趟用。
         let md = "| L | C | R |\n|:--|:-:|--:|\n| a | b | c |";
@@ -868,6 +982,32 @@ mod tests {
         let (_spans, tables, _) = parse_markdown_nodes(md, 0);
         let (s, e) = tables[0].rows[1][1]; // 第 2 行第 2 格 = 空
         assert_eq!(s, e, "空格应是空 run 区间");
+    }
+
+    #[test]
+    fn block_kinds_map_to_distinct_node_kinds() {
+        use crate::nodes::NodeKind;
+        // Plan 9 §9.0:分隔线 / 显示公式 / HTML 不再当段落,各有独立 NodeKind。
+        let kinds = |src: &str| -> Vec<NodeKind> {
+            parse_markdown_nodes(src, 0)
+                .2
+                .nodes()
+                .iter()
+                .map(|n| n.kind)
+                .collect()
+        };
+        assert!(
+            kinds("above\n\n---\n\nbelow").contains(&NodeKind::ThematicBreak),
+            "--- 应是 ThematicBreak"
+        );
+        assert!(
+            kinds("$$E = mc^2$$").contains(&NodeKind::MathDisplay),
+            "$$…$$ 应是 MathDisplay"
+        );
+        // 注:vendored jcode/pulldown 不产 `BlockKind::Html`(当段落处理),故 `HtmlBlock` 映射
+        // 保留以备(jcode 若产即对),此处不断言。
+        // 段落仍是 Paragraph(回归)。
+        assert!(kinds("just text").contains(&NodeKind::Paragraph));
     }
 
     #[test]

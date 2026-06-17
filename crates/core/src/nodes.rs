@@ -31,11 +31,17 @@ pub enum NodeKind {
     Table,
     TableRow,
     TableCell,
+    /// 显示公式块(`$$…$$`,0019/Plan 9 §9.0):有字(源)+ 框,骨架先行。
+    MathDisplay,
+    /// 分隔线(`---`,Plan 9 §9.0):**无字块**(只一个零墨 Rule 锚),走 NodeSpawn。
+    ThematicBreak,
+    /// HTML 块(Plan 9 §9.0):逐字(或留 raw 容器)。
+    HtmlBlock,
     /// 同样式连续段(一个 `StyledSpan`)。
     Run,
     /// 单 grapheme 叶(`range` 长度 1)。
     Glyph,
-    /// 嵌入块占位(图片/公式/mermaid,0022;本期不产,接口先留)。
+    /// 嵌入块占位(图片/公式/mermaid,0022;本期不产,接口先留)。**无字块**,走 NodeSpawn。
     Embed,
 }
 
