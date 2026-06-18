@@ -3,6 +3,8 @@
 - **近期可做项已拆出** → [plan4-polish](spec/plan/plan4-polish.md)(排版收口 + markdown 观感 + 基础调试器):含原 M(折行/分级/装饰/表格/令牌/pretext 清理)、调试器 P1 + 数据通道、per-role 度量。
 - **streaming 形变** → [plan5-streaming-markdown](spec/plan/plan5-streaming-markdown.md)(0016 机制 + 0017 落地 + 全 markdown 语法 streaming 规则 + 重放验证 case)。
 - **markdown 全 SDF 化** → [plan6-markdown-all-sdf](spec/plan/plan6-markdown-all-sdf.md)([0018] 落地:零散 FrameRect 装饰 → 一个参数化 SDF 面板图元 + storage buffer + #5 网格/AO/选中,接 0016/0019)。
+- **★ reveal 节奏自主(北极星)** → [plan8-reveal-cadence](spec/plan/plan8-reveal-cadence.md):落地 [0019] gate×choreography——就绪门(双门)+ `RevealStyle` 数据(Selector over 0020 节点树)+ 调度器(节奏与 token 解耦/限速/可放慢)+ 骨架先行 + 全结构块 raw 抑制 + 表格 3 风格。建在 Plan 7(0020)之上;喂 0016/PanelScene;调度器为唯一揭示路径(收编即时 spawn)。**已落地 v1**。
+  - **节奏"美感"升级(借 rap flow / groove / 语音韵律)** → [research/reveal-rhythm](spec/research/reveal-rhythm.md) + `design/thinking.md §5`:把匀速 cps 换成**节奏函数**(边界停顿 ∝ 节点层级 + 末延长 + 重音拍 + seeded 1/f 微定时),接进 Plan 8 调度器。大杠杆=结构性停顿(助读)。**思考中,未排期**。
 - **内容节点树地基** → [plan7-content-node-tree](spec/plan/plan7-content-node-tree.md):**专注落地 [0020]** ——扁平 `Vec<Node>`(嵌套区间+parent+key)sidecar,收编 glyph(0016)/TableRegion(0014)/FramePanel(6D)身份,暴露查询 API,留下游接口(`Embed` kind 占位)。**简约 v1**(不上路径哈希/Taffy/任何消费者)。**下游各自后续**:reveal(0019)、Taffy(0023)、DOM embed(0022)、节点级 morph(0016 留尾)。
 - **内容节点身份(scene-graph-lite)** → [0020](spec/decision/0020-content-node-identity-model.md):扁平 `Node` 表(嵌套区间 + parent 下标 + 路径哈希),统一 0016 NodeId / 0014 TableRegion / 0019 Selector;与 tile 分桶正交。**0019 reveal + 0016 节点级 morph 的前置**。
 - **JS/Rust 边界 + 可配置渲染样式** → [0021](spec/decision/0021-js-rust-boundary-and-configurable-render.md):渲染样式全数据驱动(`Palette` 角色配色 + `RenderStyle`,shader 去写死、从 buffer 取)、布局/渲染两条生效路径固化、**pretext 作复杂 layout 预留**(契约固定可热替换)。落地清单见 0021 §8。`TableStyle`(Plan 6)是样板。
@@ -88,11 +90,16 @@
 ### T — 字形垂直度量 / baseline(textMetrics 收口)
 
 > 拆自 [0015 §2.5](spec/decision/0015-glyph-source-fallback.md) / [plan4_progress §7.5](spec/plan/plan4_progress.md):**水平 advance 已收口**(MSDF baked xadvance);**垂直度量(baseline / 行盒 / ascent-descent / 盒对齐)是独立工作面,且预判高频踩坑,单列**。范围仍 = 中英文(LTR),非通用排版。
+>
+> **现状(实现位置,2026-06-16 核)**:全在 `web/src/layout-bridge.ts`(measureText 路)——`FONT_SIZE=16×dpr`、`LINE_HEIGHT=ceil(FONT_SIZE×1.4)`(**硬编码**)、`roleScale`(标题倍率)、`advanceFor`(measureText 宽×scale,**无 letter-spacing**);水平 align = 表格 per-列(`placeTable` + `style-config.table.hAlign`),vAlign = 表格(`style-config.table.vAlign`)。**正文无 justify、无 letter-spacing 旋钮、无真 ascent/descent/baseline。**
+> **已做(临时止血,2026-06-16)**:行内垂直 `(g.lineH-g.cell)/2` 把 glyph 在行高里居中(修"文字贴顶偏上",`layout-bridge.place` + 表格内放置)——是近似,非真 baseline。
 
 - [ ] **MSDF baseline 真机校验**:`msdf_instance` 已用 baked `yoffset`(lib.rs ~203),真机看偏高/低 → 调竖直项(单旋钮)。
 - [ ] **三源基线统一**:Canvas2D `textBaseline` 光栅(位图/TinySDF)与 SDF tile 内字模位置 + MSDF baked 盒,落同一基准(否则切源跳动)。
 - [ ] **中英混排同基线**:西文 x-height/descender vs CJK 全角盒,坐同一基线不错层。
 - [ ] **行盒来源统一**:现 `LINE_HEIGHT = 1.4×` 硬编码;ascent/descent/行高统一来源,避免不同 role(标题大字/行内码 chip/引用)行高跳动。
+- [ ] **★ 捷径:LXGW/MSDF 路直接用 baked 度量**:`scripts/bake-msdf.mjs` 产的 BMFont json **已含** `common.lineHeight / base / 逐字 yoffset/xadvance`——"真字体度量"对 LXGW 路已现成。先用它把**行高/baseline 从常数 1.4 换成真值**(troika 同源思路);系统字体路退而求其次仍近似。**不引 troika**(绑 three.js,与 0001/0021 护城河冲突),只借手法。
+- [ ] **style 面板旋钮(快赢,先手调观感)**:`lineHeight 系数 / letterSpacing / 正文 vAlign(top/center/bottom)` 接进 `style-config` + 面板(走 layout,refresh 重排),不必等真度量收口。
 - [ ] **盒对齐**:行内码 chip / 标题 / Alert 标签 / 上下标的竖直居中与基线锚点。
 - [ ] **math 行内盒 baseline**(O 的 `$…$` 依赖,见 0013)。
 - [ ] **用真实字体度量替代 measureText 近似**(行高 / 字高 / baseline / 对齐 / 字距 kerning):现在只有 Canvas2D `measureText`(仅 advance 宽)+ 硬编码 `LINE_HEIGHT=1.4` + 方形 cell,**无 ascent/descent/cap-height/baseline、无 kerning、对齐靠近似**。
