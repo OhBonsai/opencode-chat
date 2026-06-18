@@ -25,6 +25,11 @@ const BLOCK_GAP: f32 = 8.0;
 /// 锚底阈值:滚到离底 ≤ 此值即重新跟随新内容(0002 §6)。
 const ANCHOR_THRESHOLD: f32 = 48.0;
 
+/// 锚底**平滑跟随**:指数趋近时间常数(ms,fps 无关)+ 跳幅上限(world px)。小跳(换行 ~一行高)
+/// 平滑滚动消除"换行跳一下";跳幅 > 上限(初次加载 / 历史瞬显)直接到位,不慢 scroll 穿过整篇。
+const ANCHOR_FOLLOW_TAU_MS: f32 = 90.0;
+const ANCHOR_SNAP_PX: f32 = 160.0;
+
 /// 把累积的行内码 chip(`[x0,x1,y0,y1]`)推成一个带内边距的圆角底。
 fn flush_chip(chip: Option<[f32; 4]>, out: &mut Vec<FrameRect>) {
     if let Some([x0, x1, y0, y1]) = chip {
@@ -453,6 +458,8 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     smoother: Smoother,
     views: Vec<PartView>,
     now_ms: f64,
+    /// 本帧注入的 `dt_ms`(advance 时记;build_frame 的锚底平滑跟随用,fps 无关)。
+    frame_dt: f64,
     max_width: f32,
     /// 只渲染该 session 的 part(`?session=`);None = 全渲染(Plan1 行为)。
     target_session: Option<String>,
@@ -486,6 +493,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             smoother: Smoother::new(base_cps),
             views: Vec::new(),
             now_ms: 0.0,
+            frame_dt: 0.0,
             max_width,
             target_session: None,
             camera: Camera2D::new(max_width, 600.0),
@@ -685,6 +693,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// 拆分,使 [`seek_reveal`] 可低成本快进(多步只推模拟、末尾出一帧),避免每微步都提交 GPU。
     fn advance(&mut self, dt_ms: f64) {
         self.now_ms += dt_ms;
+        self.frame_dt = dt_ms; // 锚底平滑跟随用(build_frame)
         self.turn.tick(self.now_ms);
         self.ingest_events();
         self.enqueue_new_text();
@@ -976,12 +985,23 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             self.grid.insert(i, &Rect::new(0.0, t, self.max_width, h));
         }
 
-        // 3) 锚底:相机 pan.y 跟随底部并夹取。
+        // 3) 锚底:相机 pan.y **平滑**跟随底部并夹取。直接 set 到底会在每次换行(content 高 +一行)
+        //    整屏一次性上移一行 = "换行跳一下";改为指数趋近底部(fps 无关),小跳平滑、大跳(初次/
+        //    历史瞬显)直接到位避免慢 scroll 穿过整篇。字本身的重排已由 0016 morph 补间。
         let visible_h = self.camera.viewport()[1] / self.camera.zoom();
         let max_pan_y = (content_height - visible_h).max(0.0);
         let mut pan = self.camera.pan();
         if self.stick_to_bottom {
-            pan[1] = max_pan_y;
+            let dy = max_pan_y - pan[1];
+            if dy.abs() > ANCHOR_SNAP_PX {
+                pan[1] = max_pan_y; // 大跳直接到位
+            } else {
+                let k = 1.0 - (-(self.frame_dt as f32) / ANCHOR_FOLLOW_TAU_MS).exp();
+                pan[1] += dy * k;
+                if (max_pan_y - pan[1]).abs() < 0.5 {
+                    pan[1] = max_pan_y; // 收敛即贴底,免长尾抖
+                }
+            }
         }
         pan[1] = pan[1].clamp(0.0, max_pan_y);
         self.camera.set_pan(pan[0], pan[1]);
