@@ -56,6 +56,13 @@ fn style_color(s: u32) -> vec3<f32> {
     }
 }
 
+// ── SDF 节点动画(0025 / Plan 10 §3,相位 1–2 v1:全局进场 profile)──
+// 进场 = 缓动 alpha(相位1)+ 绕字心 scale-in(相位2)(+translate 钩子),由 spawn_time + fade_ms 驱动;
+// settled(e=1)零影响、瞬显(fade<=0)跳过。per-element profile(header≠body)/ threshold·band = 相位3(per-instance)。
+const ANIM_ENTER_SCALE: f32 = 0.85; // 进场起始缩放(<1 由小放大);设 1.0 关闭
+const ANIM_ENTER_RISE: f32 = 0.0;   // 进场上浮 px(>0 由下而上 rise-in);0 关闭
+fn ease_enter(t: f32) -> f32 { let u = 1.0 - t; return 1.0 - u * u * u; } // ease-out-cubic(snappy 入场)
+
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32, inst: InstanceIn) -> VsOut {
     var corners = array<vec2<f32>, 4>(
@@ -63,7 +70,14 @@ fn vs_main(@builtin(vertex_index) vid: u32, inst: InstanceIn) -> VsOut {
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0),
     );
     let c = corners[vid];
-    let world = inst.pos + c * inst.size;
+    // 进场进度 e:缓动 (now-spawn)/fade;fade<=0(瞬显/无淡入)→ e=1 跳过动画。统一喂 alpha 与 scale。
+    let age = globals.time_ms - inst.spawn_time;
+    let e = select(ease_enter(clamp(age / max(globals.fade_ms, 1.0), 0.0, 1.0)), 1.0, globals.fade_ms <= 0.0);
+    // 绕字心 scale-in + 上浮:settled(e=1)还原 inst.pos + c*size。
+    let half = vec2<f32>(0.5, 0.5);
+    let s = mix(ANIM_ENTER_SCALE, 1.0, e);
+    let world = inst.pos + inst.size * (half + (c - half) * s)
+              + vec2<f32>(0.0, (1.0 - e) * ANIM_ENTER_RISE);
     // 世界坐标 → 相机 → 屏幕 px → NDC(Plan 3 L)。
     let screen = (world - globals.cam_pan) * globals.cam_zoom;
     let ndc = vec2<f32>(
@@ -73,8 +87,7 @@ fn vs_main(@builtin(vertex_index) vid: u32, inst: InstanceIn) -> VsOut {
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.uv = vec2<f32>(mix(inst.uv.x, inst.uv.z, c.x), mix(inst.uv.y, inst.uv.w, c.y));
-    let age = globals.time_ms - inst.spawn_time;
-    out.alpha = select(clamp(age / max(globals.fade_ms, 1.0), 0.0, 1.0), 1.0, globals.fade_ms <= 0.0);
+    out.alpha = e; // 缓动淡入(相位1);emoji(kind3)同走 in.alpha
     out.tint = style_color(inst.style);
     out.layer = inst.layer;
     out.kind = inst.kind;
