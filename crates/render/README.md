@@ -20,7 +20,8 @@ wgpu 渲染后端(M8 scene / M9 effects / M10 render)。输入 core 的 `FrameDa
 | `atlas.rs` | glyph 图集:单张纹理 + UV 表 + shelf 装箱 |
 | `scene.rs` | `GpuInstance`(Pod)+ `FrameData`→instance 组装 |
 | `effects.rs` | `EffectProfile` + `Globals` uniform |
-| `shaders/glyph.wgsl` | 实例化字形 + 着色器淡入 |
+| `shaders/base/` | `sdf.wgsl`(共享形状函数库)· `glyph/rect/panel.wgsl`(各 pipeline);build 期 `with_sdf` 前置拼接(0026) |
+| `shaders/markdown/` | `widget.wgsl`(组件 pipeline,按 component id 分派)· `box.wgsl`(复选框);Plan 11 |
 
 ## 测试
 
