@@ -979,7 +979,25 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             drawable.push((i, top, c.height));
             top += c.height + BLOCK_GAP;
         }
-        let content_height = top;
+        // 1.5) 已揭示底(严格 bottom-line):锚底跟「已上屏」的字底,**不是**「已排版」全高——否则
+        //      相机先滚到解析全高、文字再慢慢揭(rate-limit 下表现为"预知一段、相机先动文字后出")。
+        //      释放按文档序 → 倒序找首个有已释放字的块,其已释放字最低底 = 揭示前沿(更后块未揭、忽略;
+        //      更前块已全揭、底 ≤ 此值)。无任何已释放字 → 0(不预滚)。
+        let mut revealed_height = 0.0f32;
+        for &(i, top_i, _h) in drawable.iter().rev() {
+            let Some(c) = &self.views[i].cache else { continue };
+            let spawn = &self.views[i].spawn;
+            let mut bmax = -1.0f32;
+            for (j, p) in c.placed.iter().enumerate() {
+                if spawn.get(j).copied().flatten().is_some() {
+                    bmax = bmax.max(p.pos[1] + p.size[1]);
+                }
+            }
+            if bmax >= 0.0 {
+                revealed_height = top_i + bmax;
+                break;
+            }
+        }
 
         // 2) 重建空间索引(块 AABB)。
         self.grid.clear();
@@ -991,7 +1009,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         //    整屏一次性上移一行 = "换行跳一下";改为指数趋近底部(fps 无关),小跳平滑、大跳(初次/
         //    历史瞬显)直接到位避免慢 scroll 穿过整篇。字本身的重排已由 0016 morph 补间。
         let visible_h = self.camera.viewport()[1] / self.camera.zoom();
-        let max_pan_y = (content_height - visible_h).max(0.0);
+        // 锚底跟「已揭示底」(严格 bottom-line);未揭示的解析尾不预滚。
+        let max_pan_y = (revealed_height - visible_h).max(0.0);
         let mut pan = self.camera.pan();
         if self.stick_to_bottom {
             if (max_pan_y - pan[1]).abs() > visible_h {
