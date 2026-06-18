@@ -132,7 +132,6 @@ impl TableStyleKind {
 }
 
 // 编排时长常量(ms)。delay_ms 由这些沿递归累加,定 `spawn=释放时刻+delay` 的相对时序。
-const SKELETON_LEAD: f32 = 120.0; // 容器骨架(代码底/引用条/公式框)先现 → 字延后
 const GRID_LEAD: f32 = 200.0; // 整表网格骨架先现 → 表头/cell 延后
 const CELL_GAP: f32 = 8.0; // 整表 cell 间极小间隔(近"并行",方案 B 真并行后续)
 const ROW_FRAME_LEAD: f32 = 120.0; // 行框:每行框先现 → 该行字延后
@@ -169,20 +168,9 @@ impl Ordering {
 /// `table` 仅影响 Table/TableRow/TableCell 子树。
 pub fn ordering_for(kind: NodeKind, table: TableStyleKind) -> Ordering {
     match kind {
-        // 根 / 段落 / 标题 / HTML:逐字,无骨架、无间隔(纯文本不回归,DoD #5)。
-        NodeKind::Doc | NodeKind::Paragraph | NodeKind::Heading | NodeKind::HtmlBlock => {
-            Ordering::Sequential { gap_ms: 0.0 }
-        }
         // 列表:逐项(项间 gap);嵌套 List 递归 → 逐层逐项。
         NodeKind::List | NodeKind::ListItem => Ordering::Sequential { gap_ms: ITEM_GAP },
-        // 代码 / 引用 / 公式:骨架(底/条/框)先现 → 字。
-        NodeKind::CodeBlock | NodeKind::Quote | NodeKind::MathDisplay => {
-            Ordering::SkeletonThenChildren {
-                frame_ms: SKELETON_LEAD,
-                gap_ms: 0.0,
-            }
-        }
-        // 表格:按 3 风格预设(§3)。
+        // 表格:按 3 风格预设(§3)。**骨架先行专属表格**(Table/TableRow 的 SkeletonThenChildren)。
         NodeKind::Table => match table {
             TableStyleKind::Raw => Ordering::Sequential { gap_ms: 0.0 },
             TableStyleKind::RowFrame => Ordering::Sequential { gap_ms: ROW_GAP },
@@ -200,7 +188,9 @@ pub fn ordering_for(kind: NodeKind, table: TableStyleKind) -> Ordering {
             TableStyleKind::Full => Ordering::Sequential { gap_ms: CELL_GAP },
             TableStyleKind::Raw => Ordering::Sequential { gap_ms: 0.0 },
         },
-        // cell / 其余容器:逐字。
+        // 段落 / 标题 / 代码 / 引用 / 公式 / HTML / cell / 其余:逐字、无骨架前导。**骨架先行只是
+        // 表格的设计**(Plan 9 评审):代码底 / 引用左条 等装饰随**已揭字** reveal(`block_decorations`
+        // 接揭示门),不靠 delay 推后字 → "block 也 reveal";纯文本不回归(DoD #5)。
         _ => Ordering::Sequential { gap_ms: 0.0 },
     }
 }
@@ -298,8 +288,16 @@ fn resolve_node(
         }
         return start_delay;
     }
-    // 无字块(分隔线/Embed):NodeSpawn,不逐字;占位返回(装饰/面板按节点淡入)。
+    // 无字块(分隔线/Embed):NodeSpawn —— **整块作一个揭示单元**(同 tier/delay 一起上屏,非逐字),
+    // 标其整段 glyph,使其参与释放/定 spawn:装饰/面板据此节点 spawn 淡入,且块能冻结(否则 glyph
+    // 永留 MAX → `all(is_some)` 永不成立 → 每帧重解析)。零墨 glyph 由 build/装饰侧据 spawn 处理。
     if is_nodespawn(node.kind) {
+        for g in node.range.0..node.range.1 {
+            if let (Some(tt), Some(dd)) = (tier.get_mut(g as usize), delay_ms.get_mut(g as usize)) {
+                *tt = block_tier;
+                *dd = start_delay;
+            }
+        }
         return start_delay;
     }
     let ordering = ordering_for(node.kind, table);
@@ -511,10 +509,15 @@ mod tests {
             ordering_for(NodeKind::List, t),
             Ordering::Sequential { gap_ms } if gap_ms > 0.0
         ));
-        assert!(matches!(
+        // 代码/引用块逐字、无骨架前导(骨架先行=表格专属;底随已揭字 reveal)。
+        assert_eq!(
             ordering_for(NodeKind::CodeBlock, t),
-            Ordering::SkeletonThenChildren { .. }
-        ));
+            Ordering::Sequential { gap_ms: 0.0 }
+        );
+        assert_eq!(
+            ordering_for(NodeKind::Quote, t),
+            Ordering::Sequential { gap_ms: 0.0 }
+        );
         // 表格 3 预设:Raw=Sequential 无 gap、RowFrame=行 gap、Full=骨架先行。
         assert_eq!(
             ordering_for(NodeKind::Table, TableStyleKind::Raw),
@@ -641,6 +644,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_tree_nodespawn_block_revealed_as_unit() {
+        // 修复 #1:分隔线(NodeSpawn)整块作一个揭示单元 → 其(非换行)glyph 也被揭示,
+        // 使含 `---` 的块能冻结(否则 glyph 永留 MAX,每帧重解析);并随节点 spawn 出现。
+        let (tree, clusters) = tree_and_clusters("a\n\n---\n\nb");
+        let plan = resolve_tree(&tree, TableStyleKind::Full, None);
+        for (g, c) in clusters.iter().enumerate() {
+            if c != "\n" {
+                assert!(
+                    plan.revealed(g),
+                    "glyph {g}({c:?}) 应揭示(含分隔线 NodeSpawn)"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn scheduler_unlimited_by_default() {
         let mut s = RevealScheduler::new();
         assert!(!s.is_rate_limited(), "默认不限速(跟内容到达)");
@@ -714,15 +733,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tree_skeleton_code_chars_delayed() {
-        // 代码块骨架先行:底先现(SKELETON_LEAD 前导)→ 码字带延迟。
+    fn resolve_tree_code_block_inline_reveal_no_skeleton() {
+        // Plan 9 评审修正:**骨架先行只是表格的设计**。代码/引用块逐字、零编排延迟;其底/条由
+        // `block_decorations` 随**已揭字**逐步 reveal(接揭示门),不靠 delay 把字推后("block 也 reveal")。
         let tree = crate::content::parse_markdown_nodes("```\nlet x=1;\n```", 0).2;
         let plan = resolve_tree(&tree, TableStyleKind::Full, None);
-        assert!(plan.skeleton_first, "代码块骨架先行");
-        // 码字延迟 ≥ 骨架前导(底/框先于字)。
         assert!(
-            plan.delay_ms.iter().any(|&d| d >= SKELETON_LEAD),
-            "码字应带骨架延迟(底先于字)"
+            !plan.skeleton_first,
+            "代码块不再骨架先行(骨架先行=表格专属)"
+        );
+        assert!(
+            plan.delay_ms.iter().all(|&d| d == 0.0),
+            "代码块逐字、零编排延迟(底随字 reveal)"
         );
     }
 }
