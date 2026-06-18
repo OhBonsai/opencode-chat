@@ -486,6 +486,8 @@ impl WebGpuBackend {
             source: wgpu::ShaderSource::Wgsl(
                 with_sdf(&[
                     include_str!("shaders/markdown/box.wgsl"),
+                    include_str!("shaders/markdown/rule.wgsl"),
+                    include_str!("shaders/markdown/rule_cat.wgsl"),
                     include_str!("shaders/markdown/widget.wgsl"),
                 ])
                 .into(),
@@ -840,6 +842,7 @@ mod tests {
         assert_valid_wgsl(
             &with_sdf(&[
                 include_str!("shaders/markdown/box.wgsl"),
+                include_str!("shaders/markdown/rule.wgsl"),
                 include_str!("shaders/markdown/widget.wgsl"),
             ]),
             "markdown-widget",

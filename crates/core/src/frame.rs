@@ -44,6 +44,10 @@ pub struct FrameRect {
 
 /// markdown 语义组件 id:复选框/确认框(0026/Plan 11)。
 pub const WIDGET_BOX: u32 = 0;
+/// markdown 语义组件 id:分隔线(`---`,中间亮两端淡出的渐变线)。
+pub const WIDGET_RULE: u32 = 1;
+/// markdown 语义组件 id:喵喵分隔线(`---` 默认;线条画风的猫坐在分割线上,移植自 bitless "Cat Division")。
+pub const WIDGET_RULE_CAT: u32 = 2;
 
 /// 一个 markdown 语义组件图元(0026/Plan 11):任务复选框等。世界坐标,与文字同相机/裁剪;
 /// 由一条 markdown widget pipeline 按 `component` 分派到组件 SDF(不借用通用 `FrameRect`,0026 §1)。

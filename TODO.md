@@ -142,7 +142,7 @@
 - [x] **相位②widget 图元 pipeline**:`shaders/markdown/widget.wgsl`(组件入口,按 component-id 分派)+ `box.wgsl`(复选框 SDF);`FrameWidget`(core)→ `WidgetInstance`(render,新 vertex 布局)→ widget pipeline(复用 globals bind);rect 后、glyph 前绘制。
 - [x] **相位③任务复选框**:`StyleRole::TaskUnchecked/TaskChecked`(追加值 22/23,数值稳定);content 检测 `[ ]`/`[x]` → 零墨锚点 cell + 间隔;`block_decorations` 据锚点发 `FrameWidget` 方框(已勾叠 SDF 对勾,绿;未勾中性灰)。重放 case `g-tasks`。
 - [ ] **本地确认**:`cargo test -p infinite-chat-{core,render}` + `wasm-pack build` + GPU 跑 `g-tasks`(改了 vertex 布局,wgpu 严格,必须实跑)。沙箱已过:wgsl 解析(markdown-widget/rect/glyph/base-sdf)+ tsc。
-- [x] **相位④文字层**:脚注 `[^x]` → **行内小标记**(引用=去括号的 Link 色小号 `FootnoteRef`/值24;定义行首=弱化小号 `1.` `FootnoteDef`/值25;content.rs 后处理 Dim span + glyph 色 + roleScale 0.7/0.85);`---` HR 已 SDF(`Rule`→FrameRect,可后续加效果)。
+- [x] **相位④文字层**:脚注 `[^x]` → **行内小标记**(引用=去括号的 Link 色小号 `FootnoteRef`/值24;定义行首=弱化小号 `1.` `FootnoteDef`/值25;content.rs 后处理 Dim span + glyph 色 + roleScale 0.7/0.85);`---` HR 已迁 markdown widget(`WIDGET_RULE` component=1,`rule.wgsl`:**中间亮两端淡出渐变线**;dispatch 用 `select` 保导数均匀)。
 - [x] **定义列表观感**:改 vendored jcode —— 术语去 bullet、内联文字置 `Strong`(粗体术语自成一行);定义去 `-> ` 箭头、改 4 空格缩进。`definition_list_term_bold_no_bullet_arrow` 验。
 - [ ] **latex / image / html / link(各拆 1 步,另排)**:latex([0013])、image([0007]/[0022])、html(现 `JRole::Html→Normal` 当文字)、link(`Link` 角色已渲,交互需 DOM overlay/事件层)。本 plan 仅登记。
 - [ ] **组件扩展**:`markdown/slider.wgsl` 等(加一个 `fn` + widget `switch` 分支 + component-id,不动布局);复选框勾选 `mix` morph 动画(接 Plan 10 §4 / 相位④图标 morph)。

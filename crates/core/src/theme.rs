@@ -15,8 +15,9 @@ pub(crate) const CODE_CHIP: [f32; 4] = [0.18, 0.19, 0.26, 0.7];
 pub(crate) const QUOTE_BAR: [f32; 4] = [0.42, 0.46, 0.56, 0.9];
 /// H1/H2 底部细线(GitHub 风)。
 pub(crate) const HEAD_RULE: [f32; 4] = [0.24, 0.27, 0.33, 0.9];
-/// 分隔线(`---`)。
-pub(crate) const HR_RULE: [f32; 4] = [0.20, 0.23, 0.28, 0.9];
+/// 分隔线(`---`)。中央色(Plan 11:迁 markdown widget,中间亮两端淡出渐变线 → 取略亮中性,
+/// shader 横向淡出到 0,故中央需可见)。
+pub(crate) const HR_RULE: [f32; 4] = [0.82, 0.86, 0.94, 1.0];
 /// 删除线(`~~…~~`,A):字中线一条细线,中性浅灰偏暖,暗底可读。
 pub(crate) const STRIKE: [f32; 4] = [0.80, 0.82, 0.88, 0.85];
 

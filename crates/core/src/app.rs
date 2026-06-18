@@ -195,12 +195,17 @@ fn block_decorations(
         // 分隔线:零墨 Rule 锚点 → 整宽细线(居其行垂直中点)。已释放才到此(循环顶部已门控)→
         // 随揭示节点出现(NodeSpawn,Plan 9 §2.6:ThematicBreak 标其 Rule 锚字 → 释放即画)。
         if r == rule {
-            out.push(FrameRect {
-                pos: [0.0, (y0 + y1) * 0.5 - 0.75],
-                size: [max_width, 1.5],
+            // 分隔线 `---` → 喵喵分隔线 widget(默认,Plan 11):线条画的猫坐在分割线上。quad 需较高
+            // 容纳猫(40px),分割线居 quad 偏下、猫在其上;猫几何在 rule_cat.wgsl 按 quad 高自适应。
+            // 渐变线版仍可用(WIDGET_RULE);如需朴素线把 component 改回去即可。
+            let mid = (y0 + y1) * 0.5;
+            let qh = 72.0; // 容纳较大的猫(升起 + 身体);线在 quad 偏下(LINE_FRAC),猫在其上
+            widgets.push(FrameWidget {
+                pos: [0.0, mid - qh + 14.0], // 线接近 rule 行中线;猫向上延展
+                size: [max_width, qh],
                 color: theme::HR_RULE,
-                radius: 0.0,
-                stroke: 0.0,
+                params: [0.0, 0.0, 0.0, 0.0],
+                component: crate::frame::WIDGET_RULE_CAT,
             });
         }
         // 任务复选框(0026/Plan 11):零墨锚点 cell → SDF 方框(已勾叠对勾);不借通用 FrameRect。
@@ -1876,11 +1881,12 @@ mod tests {
         eng.prime_from_snapshot(snap);
         eng.frame(16.0);
         let f = eng.sink().last().expect("frame");
+        // Plan 11:分隔线迁为 markdown widget(中间亮两端淡出渐变线),整宽 quad。
         assert!(
-            f.rects
+            f.widgets
                 .iter()
-                .any(|r| r.size[0] > 700.0 && r.size[1] <= 2.0 && r.stroke == 0.0),
-            "分隔线应是整宽细实线 rect"
+                .any(|w| w.component == crate::frame::WIDGET_RULE_CAT && w.size[0] > 700.0),
+            "分隔线应是整宽喵喵 rule widget"
         );
     }
 

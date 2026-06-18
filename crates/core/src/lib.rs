@@ -34,6 +34,7 @@ pub use content::{
 };
 pub use frame::{
     FrameData, FrameGlyph, FramePanel, FrameRect, FrameWidget, PANEL_AO, PANEL_GRID, WIDGET_BOX,
+    WIDGET_RULE, WIDGET_RULE_CAT,
 };
 pub use fsm::{TurnStatus, TurnTracker};
 pub use nodes::{glyph_key, Node, NodeKind, NodeTree};

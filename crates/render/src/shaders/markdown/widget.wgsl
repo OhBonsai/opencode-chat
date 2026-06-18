@@ -58,10 +58,14 @@ fn vs_main(@builtin(vertex_index) vid: u32, inst: InstanceIn) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // 单组件:直接调用(top-level → 导数处于均匀控制流)。
-    // ⚠ 不要用 `switch in.component`(选择子是 per-instance flat → 非均匀控制流)包裹会用 fwidth
-    // 的组件:WebGPU 禁止在非均匀控制流里求导数,否则 Chrome 判非法 → 黑屏。
-    // 加更多组件时:**无条件**求每个组件结果(各自导数在 top-level),再 `select(...)` 按
-    // component 选(select 是表达式、非控制流),保持均匀。
-    return md_box(in.local, in.halfsz, in.color, in.params);
+    // ⚠ WebGPU 禁止在非均匀控制流里求导数(fwidth):组件选择子 in.component 是 per-instance flat
+    // = 非均匀,故**不能**用 `switch in.component { md_x() }` 包裹会用 fwidth 的组件(否则 Chrome
+    // 黑屏)。正确做法:**无条件**求每个组件结果(各自 fwidth 在 top-level、均匀),再 `select` 选
+    // (select 是表达式、非控制流)。多算几个组件每片元成本极低。
+    let c_box = md_box(in.local, in.halfsz, in.color, in.params);
+    let c_rule = md_rule(in.local, in.halfsz, in.color, in.params);
+    let c_cat = md_rule_cat(in.local, in.halfsz, in.color, globals.time_ms);
+    var o = select(c_box, c_rule, in.component == 1u);
+    o = select(o, c_cat, in.component == 2u);
+    return o;
 }
