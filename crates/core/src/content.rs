@@ -95,6 +95,17 @@ pub enum StyleRole {
     MathScript,
     /// `KaTeX_Typewriter-Regular`。值 40。
     MathTt,
+    /// 行内数学源(`$…$`,含 `$` 定界):**哨兵**——build_frame 识别该 run、剥 `$` 交 RaTeX 排版成
+    /// 数学 SDF 字形(`display=false`);RaTeX 失败则按本角色当普通文本回退(原文 `$…$`)。值 41。
+    MathTeX,
+}
+
+impl StyleRole {
+    /// 是否数学字族角色(26–40,KaTeX 字体);`MathTeX`(41,行内源哨兵)不算(回退作文本)。
+    pub fn is_math_font(self) -> bool {
+        let v = self as u32;
+        (26..=40).contains(&v)
+    }
 }
 
 impl StyleRole {
@@ -586,7 +597,10 @@ fn map_role(span: &JSpan, kind: &BlockKind) -> StyleRole {
         _ => {}
     }
     match span.role {
-        JRole::Code | JRole::Math => StyleRole::Code,
+        // 行内数学 `$…$`(Plan 12 ③):走 MathTeX 哨兵 → build_frame 剥 `$` 交 RaTeX 排版;
+        // 行内代码 `` `…` `` 仍 Code。
+        JRole::Math => StyleRole::MathTeX,
+        JRole::Code => StyleRole::Code,
         JRole::Link => StyleRole::Link,
         JRole::Dim => StyleRole::ListMarker,
         JRole::Reasoning => StyleRole::Quote,

@@ -18,6 +18,12 @@
     { "t": 6200, "delta": "脚注示例[^1]。\n\n[^1]: 这是脚注定义。\n\n" },
     { "t": 6600, "delta": "术语\n: 定义内容。\n\n" },
     { "t": 6900, "delta": "显示数学:\n\n$$\\int_0^1 x^2\\,dx = \\tfrac13$$\n\n" },
-    { "t": 7300, "delta": "中英混排 + emoji:渲染引擎 rendering engine 🚀✅🎯 完成。" }
+    { "t": 7200, "delta": "行内公式:勾股 $a^2+b^2=c^2$、根号 $\\sqrt{2}\\approx 1.41$、分数 $\\frac{1}{2}$、希腊 $\\alpha\\,\\beta\\,\\gamma\\,\\Delta$、求和 $\\sum_{k=1}^n k$。\n\n" },
+    { "t": 7600, "delta": "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n" },
+    { "t": 7900, "delta": "$$e^{i\\pi} + 1 = 0$$\n\n" },
+    { "t": 8200, "delta": "$$\\frac{d}{dx}\\sin x = \\cos x$$\n\n" },
+    { "t": 8500, "delta": "$$\\sqrt{\\frac{a^2+b^2}{c}}$$\n\n" },
+    { "t": 8800, "delta": "$$\\lim_{x\\to 0}\\frac{\\sin x}{x} = 1$$\n\n" },
+    { "t": 9200, "delta": "中英混排 + emoji:渲染引擎 rendering engine 🚀✅🎯 完成。" }
   ]
 }

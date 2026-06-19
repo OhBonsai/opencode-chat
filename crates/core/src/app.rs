@@ -997,9 +997,10 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 }
             }
             let result = self.layout.layout(&spans, &tables, self.max_width);
-            // 数学块(Plan 12 ②):MathDisplay 节点的 raw TeX(= 该区间 display 字符拼接)→ RaTeX 排版,
-            // 缓存(随块冻结,不每帧重排)。失败者不入(退原文 TeX 渲染,兜底相位⑦)。
-            let math: Vec<((u32, u32), crate::math::MathLayout)> = nodes
+            // 数学(Plan 12 ②③):RaTeX 排版 → 缓存(随块冻结,不每帧重排)。失败者不入(退原文渲染,
+            // 兜底相位⑦)。① 显示数学 `$$…$$` = MathDisplay 节点(TeX = 区间字符,无 `$$`,display=true);
+            // ② 行内数学 `$…$` = 连续 MathTeX 角色 run(TeX = 去首尾 `$`,display=false)。
+            let mut math: Vec<((u32, u32), crate::math::MathLayout)> = nodes
                 .nodes_of_kind(crate::nodes::NodeKind::MathDisplay)
                 .filter_map(|(_, n)| {
                     let tex: String = clusters
@@ -1009,6 +1010,23 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     m.ok.then_some((n.range, m))
                 })
                 .collect();
+            let mathrole = StyleRole::MathTeX.as_u32();
+            let mut k = 0usize;
+            while k < roles.len() {
+                if roles[k] != mathrole {
+                    k += 1;
+                    continue;
+                }
+                let s = k;
+                while k < roles.len() && roles[k] == mathrole {
+                    k += 1;
+                }
+                let inner: String = clusters[s..k].concat().trim_matches('$').to_string();
+                let m = crate::math::layout_math(&inner, false);
+                if m.ok {
+                    math.push(((s as u32, k as u32), m));
+                }
+            }
             self.views[i].cache = Some(BlockCache {
                 revealed_len: len,
                 width: self.max_width,
@@ -1196,10 +1214,12 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 if !revealed {
                     continue; // 该数学块尚未揭示
                 }
-                let origin = cache
-                    .placed
-                    .get(s as usize)
-                    .map_or([0.0, block_top], |p| [p.pos[0], p.pos[1] + block_top]);
+                // origin = 公式盒左上角:x 取 run 首字左缘;y 使**数学基线对齐文本基线**
+                // (文本基线 ≈ 字顶 + 0.8×字高;数学盒基线在盒顶下 height×MATH_PX)→ 行内/显示都贴行。
+                let origin = cache.placed.get(s as usize).map_or([0.0, block_top], |p| {
+                    let baseline = p.pos[1] + block_top + p.size[1] * 0.8;
+                    [p.pos[0], baseline - m.height * MATH_PX]
+                });
                 let (mg, mr) =
                     crate::math::math_to_frame(m, origin, MATH_PX, id as u32, spawn, MATH_COLOR);
                 for (k, mut g) in mg.into_iter().enumerate() {
@@ -1708,6 +1728,44 @@ mod tests {
                 .any(|g| g.cluster == "m" && g.style == mathvar),
             "变量 m 应是 MathVar(斜体数学体)"
         );
+    }
+
+    #[test]
+    fn inline_math_renders_between_text() {
+        // Plan 12 ③:行内 `$E=mc^2$` → RaTeX 数学字形(math 角色),夹在正文之间;`$` 不显形。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            500.0,
+            800.0,
+        );
+        let snap = r#"[{"info":{"id":"m1","sessionID":"s","role":"a"},
+            "parts":[{"type":"text","id":"p1","messageID":"m1","text":"before $E=mc^2$ after"}]}]"#;
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        // 正文 before/after 在;行内公式的 'E'(MathMain)/'m'(MathVar)是数学字形。
+        assert!(
+            f.glyphs.iter().any(|g| g.cluster == "b"),
+            "正文 before 应在"
+        );
+        let mathvar = StyleRole::MathVar.as_u32();
+        let is_math = |s: u32| s >= StyleRole::MathMain.as_u32() && s <= StyleRole::MathTt.as_u32();
+        assert!(
+            f.glyphs
+                .iter()
+                .any(|g| g.cluster == "E" && is_math(g.style)),
+            "行内公式 E 应是数学字形"
+        );
+        assert!(
+            f.glyphs
+                .iter()
+                .any(|g| g.cluster == "m" && g.style == mathvar),
+            "行内公式变量 m 应是 MathVar(斜体)"
+        );
+        // `$` 定界符不显形(被 RaTeX 字形取代)。
+        assert!(!f.glyphs.iter().any(|g| g.cluster == "$"), "$ 不应显形");
     }
 
     #[test]

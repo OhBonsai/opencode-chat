@@ -174,8 +174,14 @@ impl GpuSink {
         Ok(())
     }
 
-    /// 解析某字形的源(0015 §2.2 源解析器 + 回退链)。
-    fn resolve(&self, cluster: &str) -> Source {
+    /// 解析某字形的源(0015 §2.2 源解析器 + 回退链)。`style` = 角色(数学角色另走 KaTeX)。
+    fn resolve(&self, cluster: &str, style: u32) -> Source {
+        // 数学字形(Plan 12,角色 26–40):用 KaTeX 字体经 TinySDF 栅化 —— **不走 MSDF**(运行时 lxgw
+        // MSDF 烘集无数学字形,查必落空);直接 TinySDF 保数学字族(`fontForRole` 返回 `KaTeX_*`)。
+        // 真 MSDF 锐利数学 = 离线烘 KaTeX 进数学 atlas(相位④,后续)。
+        if (26..=40).contains(&style) {
+            return Source::Raster(KIND_TINYSDF);
+        }
         // 彩色 emoji → RGBA 动态图集(0015 §7):不进 MSDF/单色路,直采真彩。
         if is_color_emoji(cluster) {
             return Source::Raster(KIND_RGBA);
@@ -249,7 +255,7 @@ impl RenderSink for GpuSink {
         let mut snapshot: Vec<(NodeId, Geom, Sample)> = Vec::with_capacity(frame.glyphs.len());
         for g in &frame.glyphs {
             let id = NodeId::new(g.block_seq, g.glyph_idx);
-            match self.resolve(&g.cluster) {
+            match self.resolve(&g.cluster, g.style) {
                 Source::Msdf(m) => {
                     self.src_counts[KIND_MSDF as usize] += 1;
                     let (aw, ah, size) = self
