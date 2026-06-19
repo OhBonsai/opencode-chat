@@ -34,10 +34,15 @@ export async function ensureSession(serverUrl: string, sessionId?: string): Prom
 
 /** 挂载输入框到 `parent`。返回卸载函数(移除 DOM)。`sessionId` 可空 → 首次发送时惰性建会话
  * (`ensureSession`),故输入框**立即可见**,不依赖服务端/会话先就绪(无服务端则发送时友好报错)。 */
+/** 跨重载暂存待发消息的 key(画布未连服务端时,重连后自动续发)。 */
+const PENDING_KEY = "ic_pending_send";
+
 export function mountChatInput(o: {
   serverUrl: string;
   sessionId?: string;
   model: ModelRef;
+  /** 画布是否已连同一服务端的 SSE(= 页面带 `?server=`)。false → 发送前先重连(否则回包无处渲染)。 */
+  canvasLive: boolean;
   parent: HTMLElement;
 }): () => void {
   let session = o.sessionId; // 惰性:首次发送时建
@@ -81,6 +86,11 @@ export function mountChatInput(o: {
     ta.style.height = `${ta.scrollHeight}px`;
   };
 
+  const fetchHint = (e: unknown) =>
+    e instanceof TypeError
+      ? `连不上 opencode (${o.serverUrl})。先起服务端:node scripts/serve.mjs,或 ?server= 指定地址。`
+      : String(e);
+
   let inFlight = false;
   const send = async () => {
     const text = ta.value.trim();
@@ -89,8 +99,32 @@ export function mountChatInput(o: {
     ta.disabled = true;
     btn.disabled = true;
     const btnLabel = btn.textContent;
-    btn.textContent = "发送中…";
     clearError();
+
+    // 画布未连服务端(页面无 ?server=)→ 回包无处渲染。先建会话、暂存本条,重载到 ?server=&session=
+    // 让画布连上同一 SSE,重连后自动续发(见下方 PENDING_KEY 回放)。
+    if (!o.canvasLive) {
+      btn.textContent = "连接中…";
+      console.info("[chat-input] 画布未连服务端,重连后续发", { serverUrl: o.serverUrl });
+      try {
+        const sid = session ?? (await ensureSession(o.serverUrl));
+        sessionStorage.setItem(PENDING_KEY, text);
+        const u = new URL(location.href);
+        u.searchParams.set("server", o.serverUrl);
+        u.searchParams.set("session", sid);
+        location.assign(u.toString()); // 重载 → 画布连 SSE,本条自动续发
+      } catch (e) {
+        showError(`无法连接:${fetchHint(e)}`);
+        console.error("[chat-input] 连接失败", e);
+        inFlight = false;
+        ta.disabled = false;
+        btn.disabled = false;
+        btn.textContent = btnLabel;
+      }
+      return;
+    }
+
+    btn.textContent = "发送中…";
     console.info("[chat-input] 发送", { serverUrl: o.serverUrl, session, text });
     try {
       if (!session) session = await ensureSession(o.serverUrl); // 惰性建会话(首发)
@@ -106,12 +140,7 @@ export function mountChatInput(o: {
         autosize();
       }
     } catch (e) {
-      // fetch 抛 TypeError 通常 = 连不上服务端(未起 / CORS / 端口错)。给可操作提示。
-      const hint =
-        e instanceof TypeError
-          ? `连不上 opencode (${o.serverUrl})。先起服务端:node scripts/serve.mjs,或 ?server= 指定地址。`
-          : String(e);
-      showError(`发送失败:${hint}`);
+      showError(`发送失败:${fetchHint(e)}`);
       console.error("[chat-input] 发送失败", e);
     } finally {
       inFlight = false;
@@ -137,6 +166,17 @@ export function mountChatInput(o: {
   bar.appendChild(btn);
   o.parent.appendChild(bar);
   o.parent.appendChild(err);
+
+  // 重连续发:上一步因画布未连而重载到 ?server= 后,画布已连 SSE → 取出暂存消息自动发出。
+  if (o.canvasLive) {
+    const pending = sessionStorage.getItem(PENDING_KEY);
+    if (pending) {
+      sessionStorage.removeItem(PENDING_KEY);
+      ta.value = pending;
+      autosize();
+      setTimeout(() => void send(), 150); // 让 SSE/快照先就绪一拍
+    }
+  }
 
   return () => {
     o.parent.removeChild(bar);

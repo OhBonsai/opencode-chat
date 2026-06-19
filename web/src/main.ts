@@ -58,6 +58,8 @@ async function main() {
       serverUrl: serverUrl ?? "http://localhost:4096",
       sessionId,
       model,
+      // 画布只有带 ?server= 时才连 SSE;否则是合成 demo,发送前需重连(chat-input 内处理)。
+      canvasLive: !!serverUrl,
       parent: document.body,
     });
   }
