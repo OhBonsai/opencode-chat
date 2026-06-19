@@ -63,8 +63,9 @@ export function mountChatInput(o: {
 
   const err = document.createElement("div");
   err.style.cssText =
-    "position:fixed;left:12px;bottom:60px;z-index:9001;max-width:60vw;color:#ff8a8a;" +
-    "font:12px/1.4 system-ui,sans-serif;white-space:pre-wrap;display:none";
+    "position:fixed;left:12px;right:12px;bottom:64px;z-index:9001;color:#ffb4b4;" +
+    "background:rgba(60,16,16,0.92);border:1px solid #7a2a2a;border-radius:8px;padding:8px 12px;" +
+    "font:13px/1.45 system-ui,sans-serif;white-space:pre-wrap;display:none";
 
   const showError = (msg: string) => {
     err.textContent = msg;
@@ -87,7 +88,10 @@ export function mountChatInput(o: {
     inFlight = true;
     ta.disabled = true;
     btn.disabled = true;
+    const btnLabel = btn.textContent;
+    btn.textContent = "发送中…";
     clearError();
+    console.info("[chat-input] 发送", { serverUrl: o.serverUrl, session, text });
     try {
       if (!session) session = await ensureSession(o.serverUrl); // 惰性建会话(首发)
       const r = await fetch(`${o.serverUrl}/session/${session}/message`, {
@@ -102,17 +106,26 @@ export function mountChatInput(o: {
         autosize();
       }
     } catch (e) {
-      showError(`网络错误: ${String(e)}`);
+      // fetch 抛 TypeError 通常 = 连不上服务端(未起 / CORS / 端口错)。给可操作提示。
+      const hint =
+        e instanceof TypeError
+          ? `连不上 opencode (${o.serverUrl})。先起服务端:node scripts/serve.mjs,或 ?server= 指定地址。`
+          : String(e);
+      showError(`发送失败:${hint}`);
+      console.error("[chat-input] 发送失败", e);
     } finally {
       inFlight = false;
       ta.disabled = false;
       btn.disabled = false;
+      btn.textContent = btnLabel;
       ta.focus();
     }
   };
 
   ta.addEventListener("input", autosize);
   ta.addEventListener("keydown", (e) => {
+    // IME 组字中(中文/日文…):Enter 仅确认候选,不发送。keyCode 229 / isComposing 都判,稳健。
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send();
