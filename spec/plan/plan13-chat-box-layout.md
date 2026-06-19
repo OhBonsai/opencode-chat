@@ -71,65 +71,206 @@ part 的 FSM/动画 → measure 报「目标态尺寸」 → Taffy 局部重排 
 
 **已有样板**:**表格就是这套模式的验证**——`placeTable` 作叶子 measure、`PanelScene` 走 0016、reveal gating 控节奏(0014 + Plan 8/9)。tool / reasoning **照表格这条已验证的路复制**:各作一个 Taffy 叶子(measure 报目标尺寸)+ 各自的 PanelScene/glyph anim + 各自揭示编排,**不是新冲突,是样板复用**。
 
-## 3. Taffy 落地(over 0020 节点树)
+## 3. 现状边界(被收编/演进的四处,带 file:符号)
 
-照搬 0023 §10,逐项:
-- 引 `taffy` crate(`crates/core`,wasm 目标);节点 `kind` → Taffy `Style`(block/flex,margin/padding/gap/align),**样式数据驱动**(0021,不写死)。
-- `NodeTree`(nodes.rs)↔ Taffy 树:`parent` 给层级,容器节点(Doc/Message/List/Quote/TableCell)→ Taffy 容器,叶子(文本 run / 表格 / embed)→ 带 measure 的叶子。append-only ⇒ 只重排活动尾部子树,前缀冻结复用(0005 块冻结)。
-- **叶子 measure**(守 measureText 护城河,0001/0021):
-  - 文本块 → measure 回调打 **JS `measureText`** + 缓存(`Map<text+width, size>`);
-  - 表格 → `placeTable`(0014)**降级为叶子 measure**(只算表内几何,文档流位置交 Taffy);
-  - 图片/embed → `reportSize`(0022)/解码尺寸占位。
-- Taffy 布局输出盒位 → **替** build_frame 手搓 `top += height + gap` → 喂 0016/`PanelScene`/embed 补间。
+| # | 在哪 | 现状签名/行为 | 本 plan 怎么动 |
+|---|---|---|---|
+| ① JS 排版 | `web/src/layout-bridge.ts::layout` | `layout(runTexts:string[], runRoles:Uint32Array, maxWidth:number, tables?) -> {glyphs:[x,y,w,h]*N, blockHeight, tablePanels}`——**整 part 一次** measureText 折行 | 拆成 **measure(量尺寸)+ layout(定宽后摆位)** 两趟(§3.4);新增轻量 `measure` |
+| ② Rust 缝 | `crates/core/src/seam.rs::LayoutEngine` | `fn layout(&mut self,&[StyledSpan],&[TableRegion],max_width)->LayoutResult{glyphs:Vec<PlacedGlyph>,block_height,table_panels}` | 加 `fn measure(&mut self,&[StyledSpan],avail_w)->MeasuredSize`(Taffy 叶子回调) |
+| ③ wasm 桥 | `crates/wasm/src/lib.rs::LayoutBridge`(:683)持 `layout_fn:js_sys::Function` | 经 config `get_fn` 注入 | 加 `measure_fn`,impl `LayoutEngine::measure` |
+| ④ 堆叠 | `crates/core/src/app.rs::build_frame`(~1060) | `views:Vec<PartView>` 扁平,逐 view `top += cache.height + BLOCK_GAP`;**无角色/嵌套/左右** | 整体替为 Taffy 树(§3.6) |
 
-## 4. web 调试输入框(纯前端便利件)
+节点树 `crates/core/src/nodes.rs`(`NodeTree`:`Node{kind,parent,range,key}` + `build(block_seq,span_glyph,blocks)`)是 0020 已落、**尚无消费者**的地基——本 plan 是它第一个消费者。
 
-- 新文件 `web/src/chat-input.ts`:画布下方一个 `<textarea>` + 发送按钮(Enter 发送 / Shift+Enter 换行)。
-- 发送 = `fetch(`${serverUrl}/session/${sessionId}/message`, { method:POST, body:{ parts:[{type:text,text}], model } })`——**复用 main.ts 已有的 `serverUrl`/`sessionId` config**;`model` 显式带(沿用 `scripts/chat.mjs` 默认,避免空回,见 knowledge/opencode.md §4)。
-- **回包不特殊处理**:assistant 的 SSE delta/updated 由**现有 Rust transport(M1)**接收并渲染——输入框只负责「把话发出去」。
-- **纯 web、零 wasm/core 改动**(作者明确:输入只是方便输入的效果);路径前缀可配(knowledge §2,默认无前缀)。
+## 4. 三层 Taffy 树(一棵树跨 chat 级 + 内容级)
 
-## 5. 相位拆分(每相位独立可验)
+```
+Tier A(chat 级 · 新建 · core 从 views+roles 构)
+  ChatRoot          Flex, dir=Column, gap=TURN_GAP, size=(viewport_w, auto)
+   └ Turn[i]        Flex, dir=Column, gap=MSG_GAP            ← 0005 投影,不存储
+       ├ UserBox    align_self=FlexEnd,  max_size.w=BUBBLE_MAX, padding=BUBBLE_PAD
+       └ AsstBox    align_self=FlexStart, max_size.w=CONTENT_MAX
+Tier B(part 内块堆叠 · 收编 top+=height)
+           └ Block*  每 part NodeTree 顶层块 → Block 容器(dir=Column, gap=BLOCK_GAP)
+Tier C(块内嵌套 · over nodes.rs 子树)
+               └ List/ListItem/Quote/Table/Run …
+                    容器节点 → Taffy 容器;Run/Table/Embed = **叶子(measure)**
+```
 
-| 相位 | 交付 | 验证 |
+- **一棵 Taffy 树**:Tier A 节点 core 现建;每个 `PartView` 的 `NodeTree` 映射成其 UserBox/AsstBox 下的子树(Tier B/C)。`Node.parent`(nodes.rs)直接给 Taffy 层级(0023 §2)。
+- **叶子 = measure 源**(守 measureText 护城河 0001/0021):文本 Run → measureText 回调;Table → `placeTable`(0014,降级为叶子 measure);Embed → `reportSize`(0022,本 plan 仅占位)。
+
+### 4.1 NodeKind → `taffy::Style` 映射(数据驱动,0021)
+
+新增 chat 级 kind(core 内部枚举,不入 nodes.rs 的 `NodeKind`,避免污染内容树):`ChatRoot/Turn/UserBox/AsstBox/Block`。映射表(值从 0021 的 `BoxStyle` 数据取,**不写死**,同 `TableStyle` 实时 setter 先例):
+
+| 节点 | display | 方向/对齐 | 关键约束 |
+|---|---|---|---|
+| ChatRoot | Flex | Column, gap=TURN_GAP | size.w = viewport |
+| Turn | Flex | Column, gap=MSG_GAP | — |
+| **UserBox** | Flex | **align_self=FlexEnd** | **max_size.w=BUBBLE_MAX**, padding |
+| **AsstBox** | Flex | **align_self=FlexStart** | max_size.w=CONTENT_MAX |
+| Block/Paragraph/Heading/CodeBlock/Quote | Block | Column | margin/gap |
+| List | Block | Column | padding_left = INDENT×depth |
+| ListItem | Flex | Row(marker + body) | — |
+| Table | Block | (叶子外层) | 内部走 placeTable measure |
+| Run / Glyph | **Leaf** | — | measure = measureText |
+
+> 左右分栏的全部"魔法" = **UserBox `align_self:FlexEnd` + `max_size.w`**;assistant 同理 FlexStart。**无新图元、无新管线**(0023 §1)。
+
+### 4.2 measure 边界演进(整 part → per-leaf 回调,两趟)
+
+Taffy `compute_layout_with_measure` 对每个叶子调 `measure(known, available) -> Size`。现 `layout()` 是"整 part 一次",故拆两趟:
+
+```
+measure 趟:Taffy 排版期对文本叶子调 LayoutEngine::measure(spans, avail_w) → (w,h)   ← 廉价、只量
+   ↓ Taffy 定下每叶子最终宽
+layout 趟:对文本叶子调现有 layout(runTexts,runRoles, leaf_w) → glyph 相对位 + 行高  ← 仅最终宽一次
+```
+
+- **新签名**(seam.rs):`fn measure(&mut self, spans:&[StyledSpan], avail_w:f32) -> MeasuredSize{ w:f32, h:f32 }`。
+- **JS 侧**(layout-bridge.ts):`measure(runTexts, runRoles, availW) -> [w,h]`,内部 `ctx.measureText` 折行算高;`Map<hash(runTexts+roles)+'@'+availW, [w,h]>` 缓存(measureText 微秒级,命中后近零)。`layout()` 同加缓存。
+- **wasm**(lib.rs):config 增 `measure` 函数(同 `layout`/`rasterize` 经 `get_fn`),`LayoutBridge` 加 `measure_fn`。
+- **增量**:append-only(0017 提交前沿)⇒ 仅活动尾部 part/块脏 → measure 只对活动叶子跑;settled view 冻结复用(0005 / app.rs `PartView.settled`)。
+
+### 4.3 角色数据通路(core,接 0005)
+
+```rust
+// 新:crates/core/src/store.rs 或 fsm.rs
+pub enum Role { User, Assistant }              // "user" → User;其余 → Assistant
+
+// Store(store.rs):现有 partID→messageID→sessionID(:93 part_session)旁加一条
+message_role: HashMap<String, Role>,           // apply_snapshot/apply_part_updated 写(protocol 已带 role)
+pub fn part_role(&self, part_id:&str) -> Role   // partID→messageID→role,同 part_session 路数
+
+// PartView(app.rs:430)加字段
+role: Role,                                     // view_mut(~1337)创建时 store.part_role 填
+```
+
+**Turn 分组(0005 §2,纯投影、不存储)**:build_frame 先扫 `views`(到达序),`User` part 开新 Turn,后续连续 `Assistant` part(跨 message/part)归当前 Turn 的 **同一个 AsstBox**(守 §2.1「一回合一盒」)→ 产 `Vec<TurnGroup{ user:Option<usize>, assistant:Vec<usize> }>`(view 下标),喂 §4 构树。重投影即恢复,无新存储。
+
+### 4.4 build_frame 重写(收编 `top+=height`)
+
+```rust
+fn build_frame(&mut self) -> FrameData {
+    let turns = group_turns(&self.views);                      // §4.3 角色分组
+    let mut bl = boxlayout::ChatTree::new(&self.box_style);     // 新模块 crates/core/src/boxlayout.rs
+    let root = bl.build(&turns, &self.views, self.max_width);   // Tier A 现建 + 各 view NodeTree 映射子树
+    bl.compute(root, self.max_width,                            // taffy compute_layout_with_measure
+               |spans, avail_w| self.layout.measure(spans, avail_w));
+    for (vi, view) in self.views.iter().enumerate() {
+        let origin = bl.abs_origin(view.box_node);             // taffy Layout.location 相对父 → DFS 累加绝对
+        // view.cache.placed 各 glyph 相对位【不变】+ origin → FrameGlyph(身份 (block_seq,glyph_idx) 稳定)
+        // view.cache.table_panels + origin → FramePanel
+    }
+    // reflow:origin 较上帧变 → 喂 Scene(字)/PanelScene(框)补间(0016,build_frame 已有 join 先例 ~355)
+}
+```
+
+- **关键**:view 内 glyph **相对位不变**(仍现 layout 摆),Taffy 只决定**盒 origin**,整体平移 → morph 身份稳定,0016 只补间平移量(§2.3)。
+- **绝对偏移**:taffy `Layout.location` 是相对父坐标 → 需一趟 DFS 累加得 world `abs_origin`(`ChatTree` 内缓存)。
+
+### 4.5 盒子与相机:不同坐标空间(不冲突,守 4 道接缝)
+
+Taffy 与相机**正交**(同 §2.3 的几何 vs 动画,这次另一根轴是"视图"):
+
+- **Taffy = 文档/世界空间布局**:盒子摆在哪(world px,在 `max_width` 文档宽里排)。
+- **相机(`camera.rs::Camera2D`)= 世界→屏幕视图变换**:你从哪看(pan/zoom → shader `Globals.cam_pan/cam_zoom`)。
+
+今天就是这么跑的:`build_frame` 产世界坐标,相机盖在上面。Taffy 只换"产世界坐标"那步引擎,**相机层不动**,故结构零冲突。要守的 4 道接缝:
+
+1. **缩放 ≠ 重排**:zoom = 相机 scale,**不触发 layout**;窗口 resize 才走 `set_max_width`(重排 + `camera.set_viewport`)。"放大看更大"(字不重折行)与"窗口变窄重折行"是两根轴,代码已分(app.rs `set_max_width` ~722 重排;`zoom_at` 不动 layout)。
+2. **左右对齐锚文档宽,不是屏幕宽**:UserBox `align_self:FlexEnd` 对齐 ChatRoot 宽(world `max_width`),相机再整体 pan/zoom。chat 列即文档 → 符合预期;**不期望"永远贴屏幕右"**(pan.x≠0 / zoom≠1 时贴的是文档右沿)。
+3. **★ 锚底读 Taffy 的 computed bottom**(收编唯一必接对的点):现 `stick_to_bottom`+`pan_vel_y`(app.rs)跟随"revealed bottom",收编时把该底从 `top+=height` 改读 **ChatRoot/末盒 computed bottom**,相机跟随逻辑不变。
+4. **无限会话**:Taffy 只重排活动尾部(settled view 冻结),相机 pan over 冻结世界坐标;world y 无限增长的 f32 精度是**既有问题(非 Taffy 引入)**,留虚拟化(TODO2 C)。
+
+未来 3D 相机(0024)仍正交:Taffy 产 2D 世界 rect,3D 相机加 `model × view_proj`(0024 §4A),Taffy 不认识相机维度。**一句话:Taffy 写世界坐标,相机写视图矩阵,互不写对方字段。**
+
+## 5. web 调试输入框(纯前端便利件,§3.8 详)
+
+```ts
+// web/src/chat-input.ts
+export function mountChatInput(o: {
+  serverUrl: string; sessionId: string;
+  model: { providerID: string; modelID: string };   // 必带:无默认 provider 时空回(knowledge §4)
+  parent: HTMLElement;
+}): () => void {
+  const ta = document.createElement("textarea");
+  let inFlight = false;
+  const send = async () => {
+    const text = ta.value.trim();
+    if (!text || inFlight) return;
+    inFlight = true; ta.disabled = true;
+    try {
+      const r = await fetch(`${o.serverUrl}/session/${o.sessionId}/message`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ parts: [{ type: "text", text }], model: o.model }),
+      });
+      if (!r.ok) showError(`${r.status} ${await r.text()}`); else ta.value = "";
+    } catch (e) { showError(String(e)); }
+    finally { inFlight = false; ta.disabled = false; ta.focus(); }
+  };
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }  // Shift+Enter 换行
+  });
+  o.parent.appendChild(ta); /* + 发送按钮 + error 区 */ return () => o.parent.removeChild(ta);
+}
+```
+
+- `serverUrl`/`sessionId` 复用 `main.ts` 现有 config(传 `new ChatCanvas` 的同源);`model` 默认沿用 `scripts/chat.mjs`(`aliyuntokenplan/deepseek-v4-pro`),可经 config/env 覆盖。
+- **回包零处理**:assistant SSE(delta/updated)由**现有 Rust transport(M1)** 接收并渲染——输入框只「把话发出去」,**不碰 wasm/core**。
+- main.ts:`mountChatInput({ serverUrl, sessionId, model, parent: document.body })`(canvas 下方),`?session=` 已有则复用,否则先 `POST /session` 建。
+
+## 6. 依赖 / 构建
+
+- `crates/core/Cargo.toml` 加 `taffy = { version = "0.7", default-features = false, features = ["std", "flexbox"] }`——纯 Rust,**无 wasm-bindgen/web-sys/wgpu**(守 CR1 native 可测 + AGENTS §8);`grid` 暂不开(省体积,chat 内容用 flex+block 足够)。
+- wasm 目标编译验证(同 Plan 12):`cargo build -p infinite-chat-core --target wasm32-unknown-unknown`。
+
+## 7. 相位拆分(每相位独立可验;file:符号)
+
+| 相位 | 交付(file:符号) | 验证 |
 |---|---|---|
-| **① Taffy 地基** | 引 taffy;`NodeTree`→Taffy 树 + kind→Style 映射(数据驱动) | cargo:构树正确 + 纯 block 堆叠结果 ≈ 现 `top+=height+gap`(等价回归) |
-| **② 叶子 measure** | 文本 measure 回调(+缓存)/ placeTable 降级叶子 / embed 占位 | cargo + tsc:折行行数/尺寸与现 measureText 一致;缓存命中 |
-| **③ 收编堆叠** | Taffy 盒位替 build_frame 手搓堆叠;接 0016/PanelScene | cargo:重放 case 块位置不回退;**GPU(人工)**:streaming 增高/列变宽平滑不跳 |
-| **④ 角色分栏** | ChatContainer flex + per-Turn UserRow(右)/AssistantRow(左);**assistant 一回合一盒**硬约束 | cargo:多 part assistant 仍**一个盒**;角色→align;max-width 留边。**GPU(人工)**:左右上屏对 |
-| **⑤ web 输入框** | `chat-input.ts` 直 POST + 复用 config + 带 model | tsc 绿;**人工**:起 opencode serve → 输入 → user 右气泡 + assistant 左流式 |
-| **⑥ 基准+卡口** | 长消息 reflow 布局耗时 + measureText 回调缓存命中率 | 全卡口绿;基准入册 |
+| **① 角色通路** | `enum Role` + `Store.message_role`/`part_role`(store.rs)+ `PartView.role`(app.rs:430)+ `group_turns`(app.rs §4.3) | cargo:user/assistant snapshot → turn 分组对;连续 assistant 多 part/message → **一组(一个 AsstBox)** |
+| **② taffy + Tier A** | taffy dep(Cargo.toml §6)+ `crates/core/src/boxlayout.rs`(`ChatTree`:ChatRoot/Turn/UserBox/AsstBox);每 part = 一个叶子(measure = 现 layout `block_height`);build_frame 收编最外堆叠 | cargo:`UserBox.location.x` 右对齐(=root_w−box_w)、`AsstBox` 左 0、`max_size.w` 生效;**GPU 人工**:左右上屏 |
+| **③ Tier B 块堆叠** | part 内 NodeTree 顶层块 → Block 容器(替 `BLOCK_GAP` 手搓);view glyph 加块 origin;**锚底改读 ChatRoot/末盒 computed bottom**(§4.5 接缝3) | cargo:块 y 位与现 `top+=height` **等价回归(±0)**;锚底 y == 末盒 bottom |
+| **④ measure 回调 + Tier C** | `LayoutEngine::measure`(seam.rs)+ JS `measure`+cache(layout-bridge.ts)+ `measure_fn`(lib.rs);nodes.rs 子树→Taffy(list/quote 缩进、table 叶子 measure=placeTable) | cargo+tsc:折行/缩进/表格位置回归;缓存命中率基准 |
+| **⑤ 0016 接合** | 盒 origin delta → `Scene`/`PanelScene` 补间(build_frame ~355 先例) | cargo:origin 变注入补间端点;**GPU 人工**:reflow/列变宽平滑不跳 |
+| **⑥ web 输入框** | `chat-input.ts`(§5)+ main.ts 挂载 | tsc 绿;**人工**:起 opencode serve → 输入 → user 右 + assistant 左流式 |
+| **⑦ 基准+卡口** | reflow 布局耗时 + measure 缓存命中(`?debug` perf 行) | 全卡口绿;基准入册 |
 
-> **沙箱约束(同 Plan 12)**:core(Taffy 树/measure/盒位)与 tsc 可在沙箱跑测;**左右上屏、streaming 平滑、输入实时对话须人工 GPU/浏览器 + 本地 opencode serve 验收**。
+> **沙箱可验 vs 人工 GPU**(同 Plan 12):core(Taffy 树/measure/盒位/角色分组)+ tsc 沙箱跑测;**左右上屏、streaming 平滑、实时对话须人工 GPU/浏览器 + 本地 opencode serve**。
 
-## 6. 测试用例提纲
+## 8. 测试用例提纲
 
-- [ ] 正常:单 user + 单 assistant → 左右分栏;assistant 多 message/part → **一个盒**(0005 硬约束)。
-- [ ] 正常:嵌套列表 / 多级引用 → Taffy 缩进/gap 正确。
-- [ ] 边界:空 assistant 回合;超长 user 文本(max-width 折行、不铺满);表格在流中列变宽 → reflow 不跳变(0016)。
-- [ ] 边界:append-only 增量——仅活动尾部子树重排,前缀盒位冻结复用。
-- [ ] 错误:measure 回调缓存 miss / measureText 异常;Taffy 输出 NaN 防护;POST 失败(网络 / 无 model 空回)有提示不崩。
+- [ ] 正常:单 user + 单 assistant snapshot → `group_turns` 1 turn;`UserBox.x > AsstBox.x`(右/左);assistant 多 message/part → `assistant.len()>1` 但**一个 AsstBox 节点**(0005 硬约束)。
+- [ ] 正常:嵌套列表(depth 1/2)→ Taffy `padding_left = INDENT×depth`;多级引用嵌套盒。
+- [ ] 边界:空 assistant 回合(AsstBox 高=0,不占位跳变);超长 user 文本 → `max_size.w=BUBBLE_MAX` 折行、不铺满;表格流中列变宽 → origin delta 进 0016 不跳。
+- [ ] 边界:append-only 增量——仅活动尾部 view 重 measure/重排,前缀盒 `abs_origin` 冻结复用(settled view 不进 compute)。
+- [ ] 回归:Tier B 关掉角色后,块 y 位 == 现 `top+=height+BLOCK_GAP`(±0,证收编无几何漂移)。
+- [ ] 错误:measure 缓存 miss 路径正确;Taffy 输出 NaN/Inf 防护(clamp);POST 失败(网络 / 4xx / 无 model 空回)输入框提示不崩。
 
-## 7. Scope · 不做什么
+## 9. Scope · 不做什么
 
-- ❌ 不做全 CSS / RTL / 复杂脚本(0023 §7);文字测量**不 Rust 化**(0021 否)。
-- ❌ **不把 assistant 一回合拆成多气泡**(0005 拍平不动)——但 part **按类型各自渲染/动画**仍是方向(§2.2),只是本 plan v1 只落 markdown(text part),tool/其余 part 类型后续单独排期。
+- ❌ 不做全 CSS / RTL / 复杂脚本(0023 §7);文字测量**不 Rust 化**(0021 否,measure 走 JS 回调)。
+- ❌ **不把 assistant 一回合拆成多气泡**(0005 拍平不动)——part **按类型各自渲染/动画**是方向(§2.2),但本 plan v1 只落 markdown(text part);tool/其余 part 类型后续单独排期。
 - ❌ v1 user 盒只渲纯文本;`@ref`/图片/文件/link/技能等富语法后续(§2.2),本 plan 不含。
-- ❌ 输入框不做富文本/附件/历史回溯/快捷键完整——只够联调实时对话;**不进 Taffy、不动 wasm**(页面外壳走 web CSS)。
-- ❌ 头像 / 连续同发送者气泡融合(Plan 10 §4)、hover/选中——本 plan 不含,留后续。
+- ❌ Tier C 的 grid 布局、`align-content`/`justify` 全集——只用 flex(row/column)+block + `align_self` + `max_size`/`padding`。
+- ❌ 输入框不做富文本/附件/历史回溯/快捷键完整——只够联调;**不进 Taffy、不动 wasm**。
+- ❌ 头像 / 连续同发送者气泡融合(Plan 10 §4)、hover/选中——后续。
 
-## 8. Risk / Open Questions
+## 10. Risk / Open Questions
 
-- **measure 回调跨界频次**(0023 §9):活动块文本叶子多 → 布局期 measureText 回调多;靠缓存 + 只重排活动块守。相位⑥基准量化。
-- **wasm 包体**:+Taffy(纯 Rust,中等),可接受。
-- **契约扩张**:content→layout 从「扁平 run + sidecar」升到「节点树 + Taffy 样式」(0023 §9),改动面大,与 0020 同期。
-- **Open**:① tool / reasoning 等 part 类型在 assistant 盒内的**各自渲染 + 动画**(§2.2)如何分相位——结构上确定**落同一盒、不另起气泡**,但每类的呈现单独排期。② user 文本特殊语法(`@ref`/图片/文件/link/技能)的渲染接 0006/0007,单独排期。③ 角色分栏模型是否回填一条 **ADR 0027**(目前决策散在 0005/0000/本 plan;落地后建议上提)。
+- **measure 两趟 + 回调频次**(0023 §9):measure 趟对活动叶子多次回调 JS;靠 `Map` 缓存(text+role+availW)+ 只重排活动 view + measureText 微秒级守。相位⑦量化命中率/布局耗时。
+- **绝对偏移累加**:taffy `Layout.location` 相对父 → DFS 累加 `abs_origin`,O(节点);只对活动子树重算,前缀缓存。
+- **wasm 包体**:+taffy(纯 Rust,中等);`grid` 不开省一截。基准记包体 delta。
+- **契约扩张**(0023 §9):content→layout 从「扁平 run + sidecar」升到「节点树 + Taffy 样式 + measure 回调」,改动面大;Tier A→B→C 分相位降风险(A 独立可上屏,B/C 回归守等价)。
+- **Open**:① tool/reasoning 各自渲染+动画(§2.2)的分相位——结构定「同盒不另气泡」,呈现单独排期;② user 富语法(0006/0007)单独排期;③ 角色分栏 + §2.3 动画接缝纪律是否回填 **ADR 0027**(现散在 0005/0000/本 plan,落地后建议上提)。
 
-## 9. Done
+## 11. Done
 
-Taffy 收编 build_frame 块堆叠、重放无回退;**user 右 / assistant 左,assistant 一回合一个容器盒(v1 内部落 markdown,part 类型/富语法后续按 §2.2 扩展)**;web 输入框直 POST 可与本地 opencode serve 实时对话(回包走现有 SSE);卡口(cargo fmt/clippy/test native+wasm、wasm-pack build、tsc)全绿;reflow 布局基准入册。
+`boxlayout::ChatTree` 收编 build_frame `top+=height`、Tier B 等价回归(±0);**user 右 / assistant 左,assistant 一回合一个 AsstBox(v1 内部落 markdown)**;`LayoutEngine::measure` 回调 + JS 缓存接通(护城河守住);盒 origin 经 0016 补间、reflow 不跳;web `chat-input.ts` 直 POST 可与本地 opencode serve 实时对话(回包走现有 SSE);卡口(cargo fmt/clippy/test native+wasm、`cargo build --target wasm32`、wasm-pack build、tsc)全绿;reflow 布局 + measure 缓存命中基准入册。
 
-## 10. 关联
+## 12. 关联
 
-- decision:[0023](../decision/0023-taffy-box-layout.md)(主)/ [0020](../decision/0020-content-node-identity-model.md) / [0005](../decision/0005-turn-aggregation-and-settlement.md)(硬约束)/ [0016](../decision/0016-streaming-morph-render-model.md)(盒位过渡)/ [0019](../decision/0019-reveal-gating-and-choreography.md)·[0025](../decision/0025-sdf-node-animation-system.md)(揭示/盒内动画,§2.3)/ [0002](../decision/0002-event-driven-pipeline.md)(Part FSM)/ [0014](../decision/0014-table-two-pass-layout.md)(measure+补间样板,§2.3)/ [0021](../decision/0021-js-rust-boundary-and-configurable-render.md) / [0001 §2.2](../decision/0001-canvas-architecture.md);可上提 **ADR 0027**(角色分栏模型 + §2.3 动画接缝纪律)。
-- Code 入口:`crates/core/src/app.rs::build_frame`(~1060,被收编)、`crates/core/src/nodes.rs`(`NodeTree`)、`web/src/main.ts`(config:serverUrl/sessionId)、`web/src/chat-input.ts`(新)、`scripts/chat.mjs`(POST 范本)、knowledge/opencode.md §4(发消息契约)。
+- decision:[0023](../decision/0023-taffy-box-layout.md)(主)/ [0020](../decision/0020-content-node-identity-model.md)(`nodes.rs` 树)/ [0005](../decision/0005-turn-aggregation-and-settlement.md)(角色/turn 硬约束)/ [0016](../decision/0016-streaming-morph-render-model.md)(盒位过渡)/ [0019](../decision/0019-reveal-gating-and-choreography.md)·[0025](../decision/0025-sdf-node-animation-system.md)(揭示/盒内动画,§2.3)/ [0002](../decision/0002-event-driven-pipeline.md)(Part FSM)/ [0014](../decision/0014-table-two-pass-layout.md)(measure+补间样板)/ [0021](../decision/0021-js-rust-boundary-and-configurable-render.md)(样式数据/measure 边界)/ [0001 §2.2](../decision/0001-canvas-architecture.md)(measureText 护城河);可上提 **ADR 0027**。
+- Code 入口:`crates/core/src/app.rs::build_frame`(~1060,被收编)·`PartView`(:430,加 role)·`view_mut`(~1337)/ `crates/core/src/seam.rs::LayoutEngine`(加 measure)·`PlacedGlyph`/`TablePanel`/`LayoutResult`/ `crates/core/src/store.rs`(:93 part_session 旁加 part_role)/ `crates/core/src/nodes.rs`(`NodeTree`→Taffy)/ `crates/core/src/boxlayout.rs`(**新**,`ChatTree`)/ `crates/wasm/src/lib.rs`(:683 `LayoutBridge` 加 measure_fn)/ `web/src/layout-bridge.ts::layout`(拆 measure)/ `web/src/main.ts`(config + 挂 chat-input)/ `web/src/chat-input.ts`(**新**)/ `scripts/chat.mjs`(POST 范本)/ knowledge/opencode.md §4(发消息契约)。

@@ -12,6 +12,7 @@
 //! 每帧编排见 [`app::Engine`]。
 
 mod app;
+mod boxlayout;
 mod camera;
 mod content;
 mod frame;

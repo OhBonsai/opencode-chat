@@ -67,7 +67,7 @@ fn flush_strike(seg: Option<[f32; 4]>, out: &mut Vec<FrameRect>) {
 fn node_debug_rects(
     tree: &crate::nodes::NodeTree,
     placed: &[PlacedGlyph],
-    top: f32,
+    origin: [f32; 2],
     out: &mut Vec<FrameRect>,
 ) {
     use crate::nodes::NodeKind;
@@ -111,7 +111,7 @@ fn node_debug_rects(
         let (bx0, by0, bx1, by1) = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
         if bx1 > bx0 && by1 > by0 && x1 > x0 {
             out.push(FrameRect {
-                pos: [bx0, by0 + top],
+                pos: [bx0 + origin[0], by0 + origin[1]],
                 size: [bx1 - bx0, by1 - by0],
                 color,
                 radius: 0.0,
@@ -147,8 +147,8 @@ fn enter_profile_id(role: u32, table: TableStyleKind) -> u32 {
 fn block_decorations(
     cache: &BlockCache,
     block_seq: u32,
-    top: f32,
-    max_width: f32,
+    origin: [f32; 2], // Plan 13:盒左上角 world 坐标(装饰随 view 盒平移)
+    box_w: f32,       // 盒宽(全宽装饰:代码底/引用条/分隔线/表头线锚它,非整窗宽)
     ts: &TableStyle,
     spawn: &[Option<f32>],
     reveal_kind: TableStyleKind,
@@ -184,7 +184,7 @@ fn block_decorations(
             flush_strike(strike_seg.take(), out);
             continue;
         }
-        let (x0, y0) = (p.pos[0], p.pos[1] + top);
+        let (x0, y0) = (p.pos[0] + origin[0], p.pos[1] + origin[1]);
         let (x1, y1) = (x0 + p.size[0], y0 + p.size[1]);
         let r = cache.roles[j];
         if r == code {
@@ -213,8 +213,8 @@ fn block_decorations(
             let mid = (y0 + y1) * 0.5;
             let qh = 72.0; // 容纳较大的猫(升起 + 身体);线在 quad 偏下(LINE_FRAC),猫在其上
             widgets.push(FrameWidget {
-                pos: [0.0, mid - qh + 14.0], // 线接近 rule 行中线;猫向上延展
-                size: [max_width, qh],
+                pos: [origin[0], mid - qh + 14.0], // 线接近 rule 行中线;猫向上延展
+                size: [box_w, qh],
                 color: theme::HR_RULE,
                 params: [0.0, 0.0, 0.0, 0.0],
                 component: crate::frame::WIDGET_RULE_CAT,
@@ -274,10 +274,10 @@ fn block_decorations(
     flush_strike(strike_seg, out);
     if has_head_rule {
         // GitHub:H1/H2 底部细线,跨整块宽。
-        let ry = top + cache.height - 2.0;
+        let ry = origin[1] + cache.height - 2.0;
         out.push(FrameRect {
-            pos: [0.0, ry],
-            size: [max_width, 1.5],
+            pos: [origin[0], ry],
+            size: [box_w, 1.5],
             color: theme::HEAD_RULE,
             radius: 0.0,
             stroke: 0.0,
@@ -285,8 +285,8 @@ fn block_decorations(
     }
     if has_code {
         out.push(FrameRect {
-            pos: [0.0, cy0 - 4.0],
-            size: [max_width, (cy1 - cy0) + 8.0],
+            pos: [origin[0], cy0 - 4.0],
+            size: [box_w, (cy1 - cy0) + 8.0],
             color: theme::CODE_BG,
             radius: 6.0,
             stroke: 0.0,
@@ -353,7 +353,7 @@ fn block_decorations(
         };
         panels.push(FramePanel {
             id: (u64::from(block_seq) << 32) | ti as u64, // 稳定身份 → 0016 panel 补间(6D)
-            pos: [t.x - pad, t.y + top - pad],
+            pos: [t.x + origin[0] - pad, t.y + origin[1] - pad],
             size: [gw, gh],
             radius: ts.radius,
             fill: [0.0, 0.0, 0.0, 0.0],
@@ -375,15 +375,15 @@ fn block_decorations(
         // Alert:整块淡底(GitHub 风)+ 类型色左条;普通引用:中性左条。
         if is_alert {
             out.push(FrameRect {
-                pos: [0.0, qy0 - 3.0],
-                size: [max_width, (qy1 - qy0) + 6.0],
+                pos: [origin[0], qy0 - 3.0],
+                size: [box_w, (qy1 - qy0) + 6.0],
                 color: theme::alert_bg(&alert_label),
                 radius: 5.0,
                 stroke: 0.0,
             });
         }
         out.push(FrameRect {
-            pos: [0.0, qy0],
+            pos: [origin[0], qy0],
             size: [3.0, qy1 - qy0],
             color: if is_alert {
                 theme::alert_bar(&alert_label)
@@ -449,20 +449,11 @@ struct PartView {
     role: crate::store::Role,
 }
 
-/// 一个回合的角色分组(0005 投影,纯计算、不存储;Plan 13 §4.3)。`user` = 该回合的 user part
-/// view 下标(可空:首回合可能直接是 assistant);`assistant` = 该回合**连续** assistant part 的
-/// view 下标(跨 message/part,守 §2.1「一回合一个 AsstBox」)。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)] // reason: Plan 13 ② build_frame 接 Taffy 后消费;先落角色分组(① 可独立测)
-struct TurnGroup {
-    user: Option<usize>,
-    assistant: Vec<usize>,
-}
-
 /// 把 views(到达序)分组成回合(Plan 13 §4.3,纯投影):遇 User part 开新回合;连续 Assistant
-/// part 归当前回合的同一 AsstBox。无前导 user 的 assistant 自成一回合(user=None)。
-#[allow(dead_code)] // reason: Plan 13 ② build_frame 接 Taffy 后消费
-fn group_turns(views: &[PartView]) -> Vec<TurnGroup> {
+/// part 归当前回合的同一 AsstBox。无前导 user 的 assistant 自成一回合(user=None)。`TurnGroup`
+/// 定义在 [`crate::boxlayout`](布局消费方)。
+fn group_turns(views: &[PartView]) -> Vec<crate::boxlayout::TurnGroup> {
+    use crate::boxlayout::TurnGroup;
     use crate::store::Role;
     let mut turns: Vec<TurnGroup> = Vec::new();
     for (vi, v) in views.iter().enumerate() {
@@ -1133,9 +1124,35 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     fn build_frame(&mut self) -> FrameData {
         // 排版 + 揭示调度已在 `frame()` 内先行(ensure_layouts → schedule);此处只读状态组帧。
 
-        // 1) 收可绘制块(过滤非目标 session / 空块)+ 世界 top(只读借用)。
-        let mut drawable: Vec<(usize, f32, f32)> = Vec::new(); // (块下标, top, 高)
-        let mut top = 0.0f32;
+        // 1) chat 级盒子布局(Plan 13 §4):角色分组 → Taffy 盒树 → 每 view 盒 origin/width。**收编
+        //    手搓 `top += height`**:user 右、assistant 左、一回合一盒(0005)。view 内 glyph 相对位
+        //    不变,整体按 box origin 平移(0016 morph 身份稳定)。叶子尺寸 = (内容宽, 块高)。
+        let sizes: Vec<(f32, f32)> = self
+            .views
+            .iter()
+            .map(|v| {
+                if self.is_filtered(v) {
+                    return (0.0, 0.0);
+                }
+                match &v.cache {
+                    Some(c) if !c.placed.is_empty() => {
+                        let w = c
+                            .placed
+                            .iter()
+                            .filter(|p| p.size[0] > 0.0)
+                            .map(|p| p.pos[0] + p.size[0])
+                            .fold(0.0f32, f32::max);
+                        (w, c.height)
+                    }
+                    _ => (0.0, 0.0),
+                }
+            })
+            .collect();
+        let turns = group_turns(&self.views);
+        let boxpos = crate::boxlayout::layout_chat(&turns, &sizes, self.max_width);
+
+        // 可绘制块(过滤非目标 session / 空块)+ 盒 (origin, 盒宽, 高)。
+        let mut drawable: Vec<(usize, [f32; 2], f32, f32)> = Vec::new(); // (view, origin, 盒宽, 高)
         let mut total_glyphs = 0usize; // 可观测:裁剪前总量
         for (i, view) in self.views.iter().enumerate() {
             if self.is_filtered(view) {
@@ -1146,15 +1163,15 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 continue;
             }
             total_glyphs += c.placed.len();
-            drawable.push((i, top, c.height));
-            top += c.height + BLOCK_GAP;
+            let bp = boxpos.get(i).copied().unwrap_or_default();
+            drawable.push((i, bp.origin, bp.width.max(1.0), c.height));
         }
         // 1.5) 已揭示底(严格 bottom-line):锚底跟「已上屏」的字底,**不是**「已排版」全高——否则
         //      相机先滚到解析全高、文字再慢慢揭(rate-limit 下表现为"预知一段、相机先动文字后出")。
         //      释放按文档序 → 倒序找首个有已释放字的块,其已释放字最低底 = 揭示前沿(更后块未揭、忽略;
         //      更前块已全揭、底 ≤ 此值)。无任何已释放字 → 0(不预滚)。
         let mut revealed_height = 0.0f32;
-        for &(i, top_i, _h) in drawable.iter().rev() {
+        for &(i, origin, _w, _h) in drawable.iter().rev() {
             let Some(c) = &self.views[i].cache else {
                 continue;
             };
@@ -1166,15 +1183,16 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 }
             }
             if bmax >= 0.0 {
-                revealed_height = top_i + bmax;
+                revealed_height = origin[1] + bmax;
                 break;
             }
         }
 
         // 2) 重建空间索引(块 AABB)。
         self.grid.clear();
-        for &(i, t, h) in &drawable {
-            self.grid.insert(i, &Rect::new(0.0, t, self.max_width, h));
+        for &(i, origin, box_w, h) in &drawable {
+            self.grid
+                .insert(i, &Rect::new(origin[0], origin[1], box_w, h));
         }
 
         // 3) 锚底:相机 pan.y **平滑**跟随底部并夹取。直接 set 到底会在每次换行(content 高 +一行)
@@ -1214,8 +1232,10 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
 
         // 4) 视口查可见块(grid 是 broad phase)→ 实际 AABB narrow phase → 出世界坐标 glyph。
-        let boxes: std::collections::HashMap<usize, (f32, f32)> =
-            drawable.iter().map(|&(i, t, h)| (i, (t, h))).collect();
+        let boxes: std::collections::HashMap<usize, ([f32; 2], f32, f32)> = drawable
+            .iter()
+            .map(|&(i, o, w, h)| (i, (o, w, h)))
+            .collect();
         let visible = self.camera.visible_world_rect();
         let ids = self.grid.query(&visible);
         let mut glyphs = Vec::new();
@@ -1227,15 +1247,19 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         for id in ids {
             let view = &self.views[id];
             let Some(cache) = &view.cache else { continue };
-            let (block_top, block_h) = boxes.get(&id).copied().unwrap_or((0.0, 0.0));
-            if !Rect::new(0.0, block_top, self.max_width, block_h).intersects(&visible) {
+            let (origin, box_w, block_h) =
+                boxes
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(([0.0, 0.0], self.max_width, 0.0));
+            if !Rect::new(origin[0], origin[1], box_w, block_h).intersects(&visible) {
                 continue; // narrow phase:实际矩形不相交 → 裁掉
             }
             block_decorations(
                 cache,
                 id as u32, // block_seq:面板稳定身份高位(6D)
-                block_top,
-                self.max_width,
+                origin,    // Plan 13:盒 origin(x,y),装饰整体平移到盒位
+                box_w,     // 盒宽(全宽装饰:代码底/引用条/分隔线锚它,非整窗宽)
                 &self.table_style,
                 &view.spawn,
                 reveal_kind,
@@ -1264,8 +1288,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 // glyph 级 y 裁剪:单条长消息是一个巨块,块级裁剪不够 —— 块内只发与视口相交
                 // 的字,把每帧发射量从"整篇"降到"约一屏",根治长消息的每帧分配风暴。
                 let gworld = Rect::new(
-                    placed.pos[0],
-                    placed.pos[1] + block_top,
+                    placed.pos[0] + origin[0],
+                    placed.pos[1] + origin[1],
                     placed.size[0],
                     placed.size[1],
                 );
@@ -1274,7 +1298,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 }
                 glyphs.push(FrameGlyph {
                     cluster: cache.clusters[j].clone(),
-                    pos: [placed.pos[0], placed.pos[1] + block_top], // 世界坐标
+                    pos: [placed.pos[0] + origin[0], placed.pos[1] + origin[1]], // 世界(盒 origin 平移)
                     size: placed.size,
                     spawn_time: spawn,
                     style: cache.roles[j],
@@ -1306,18 +1330,22 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     self.math_em
                 };
                 // y:数学基线对齐文本基线(文本基线 ≈ 字顶 + 0.8×字高;数学盒基线在盒顶下 height×px)。
-                // x:行内取 run 首字左缘;显示数学**居中**((可见宽 - 整式宽)/2,夹 ≥0)。
-                let pos = cache.placed.get(s as usize).map_or([0.0, block_top], |p| {
-                    [p.pos[0], p.pos[1] + block_top + p.size[1] * 0.8]
-                });
+                // x:行内取 run 首字左缘;显示数学**在盒内水平居中**((盒宽 - 整式宽)/2,夹 ≥0)。
+                // 均叠加盒 origin(Plan 13:数学随 view 盒平移)。
+                let pos = cache
+                    .placed
+                    .get(s as usize)
+                    .map_or([origin[0], origin[1]], |p| {
+                        [p.pos[0] + origin[0], p.pos[1] + origin[1] + p.size[1] * 0.8]
+                    });
                 let ox = if display {
-                    ((self.max_width - m.width * px) * 0.5).max(0.0)
+                    origin[0] + ((box_w - m.width * px) * 0.5).max(0.0)
                 } else {
                     pos[0]
                 };
-                let origin = [ox, pos[1] - m.height * px];
+                let math_origin = [ox, pos[1] - m.height * px];
                 let (mg, mr) =
-                    crate::math::math_to_frame(m, origin, px, id as u32, spawn, MATH_COLOR);
+                    crate::math::math_to_frame(m, math_origin, px, id as u32, spawn, MATH_COLOR);
                 for (k, mut g) in mg.into_iter().enumerate() {
                     g.glyph_idx = MATH_IDX_BASE + s + k as u32;
                     glyphs.push(g);
@@ -1330,20 +1358,20 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
         // 调试几何叠加(Plan 4C3):块 AABB(描边)+ 视口框 + **内容节点框(Plan 7E / 0020)**。
         if self.debug_geometry {
-            for &(id, t, h) in &drawable {
-                if !Rect::new(0.0, t, self.max_width, h).intersects(&visible) {
+            for &(id, origin, box_w, h) in &drawable {
+                if !Rect::new(origin[0], origin[1], box_w, h).intersects(&visible) {
                     continue;
                 }
                 rects.push(FrameRect {
-                    pos: [0.0, t],
-                    size: [self.max_width, h],
+                    pos: origin,
+                    size: [box_w, h],
                     color: theme::DBG_BLOCK,
                     radius: 0.0,
                     stroke: 1.5,
                 });
                 // 节点树:逐容器节点描其 glyph range 的 AABB(肉眼验树,复用 4C3 叠加,7E)。
                 if let Some(cache) = self.views[id].cache.as_ref() {
-                    node_debug_rects(&cache.nodes, &cache.placed, t, &mut rects);
+                    node_debug_rects(&cache.nodes, &cache.placed, origin, &mut rects);
                 }
             }
             rects.push(FrameRect {

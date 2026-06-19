@@ -17,6 +17,9 @@ jcode-render-core = { path = "../../vendor/jcode-render-core" }
 ratex-parser = { workspace = true }
 ratex-layout = { workspace = true }
 ratex-types = { workspace = true }
+# chat 级盒子布局(Plan 13 / 0023):Flexbox 盒子树(角色左右分栏 + 内容嵌套)。纯 Rust、wasm 友好
+# (无 wasm-bindgen/web-sys/wgpu,守 CR1);只开 flexbox(grid 暂不开,省体积)。
+taffy = { version = "0.7", default-features = false, features = ["std", "taffy_tree", "flexbox", "block_layout"] }
 
 [dev-dependencies]
 proptest = "1"
