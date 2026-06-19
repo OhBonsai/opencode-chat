@@ -300,6 +300,20 @@ fn block_decorations(
             radius: 6.0,
             stroke: 0.0,
         });
+        // gutter 分隔线(Plan 15 ②⑥):行号列与代码区之间一条细竖线,跨行窗高。
+        for cb in &cache.code_blocks {
+            if cb.code_x0 <= 0.0 {
+                continue;
+            }
+            let win_h = crate::codeblock::window_height(cb.n_lines, cb.line_h);
+            out.push(FrameRect {
+                pos: [origin[0] + cb.code_x0 - 4.0, origin[1] + cb.top_y - 2.0],
+                size: [1.0, win_h + 4.0],
+                color: theme::CODE_GUTTER_LINE,
+                radius: 0.0,
+                stroke: 0.0,
+            });
+        }
     }
     // 表格(0018 #5):layout 已按表给出精确网格几何(box/cols/rows/header_bottom,块内相对 px)。
     // **逐表**收敛成一个 SDF 面板(圆角外框 + 表头底 + 横线/竖线网格 + AO),不再从 glyph AABB

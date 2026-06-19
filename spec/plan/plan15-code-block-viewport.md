@@ -1,5 +1,7 @@
 # Plan 15 — 代码块视口落地:行窗 + 边缘淡入淡出 + 双向滚动 + 行号 + 复制图标
 
+- 状态(2026-06-20):**①–⑥ core/render/wasm/tsc 落地 + 测试通过(整链编译 wasm32);淡入淡出/
+  滚动手感/图标/横裁须人工 GPU**。进度详情 → [plan15_progress.md](./plan15_progress.md)。
 - 日期:2026-06-19
 - 前置:[0027 代码块视口](../decision/0027-code-block-viewport.md)(决策)、[plan13 Taffy 叶子](./plan13-chat-box-layout.md)、[plan14 copy.svg→纹理](./plan14-image-embed.md)、[0018 面板](../decision/0018-sdf-panel-decoration-primitive.md)、[0011 per-glyph alpha](../decision/0011-gpu-text-as-sdf-primitive.md)、[research 代码高亮](../research/code-block-syntax-highlighting.md)(逐字色,正交)
 - 一句话:落地 0027——代码块 = **6 行行窗**(maxHeight,0021 可配),超出**软裁剪 + 上淡出/下淡入**,流式自动 tail,左 **行号 gutter**,右上 **copy.svg 图标**(钉住),块内 **纵+横滚动**。复制交互/选中**不做**(图标先在)。
