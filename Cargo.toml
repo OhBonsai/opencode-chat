@@ -24,6 +24,12 @@ tracing-wasm = "0.2"
 console_error_panic_hook = "0.1"
 wgpu = "25"                        # ★用前确认最新稳定版,WebGPU+WebGL2 后端
 bytemuck = { version = "1", features = ["derive"] }
+# 数学排版(0013 §8 / Plan 12):RaTeX 纯 Rust,LaTeX→DisplayList(定位字形 + 横线/路径)。
+# git 钉 rev = 本地读源核实的提交;不把 RaTeX 源收进本仓(.gitignore 排除 /RaTeX/)→ 可复现。
+# 调试时可临时改 path = "RaTeX/crates/ratex-layout" 等,提交前换回 git。
+ratex-parser = { git = "https://github.com/erweixin/RaTeX", rev = "1e5ae7d" }
+ratex-layout = { git = "https://github.com/erweixin/RaTeX", rev = "1e5ae7d" }
+ratex-types = { git = "https://github.com/erweixin/RaTeX", rev = "1e5ae7d" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"               # render/wasm 局部确需可 #[allow(unsafe_code)] 并注释(deny 可被局部 allow,forbid 不可)

@@ -1,7 +1,7 @@
 # 决策记录 0013:数学(LaTeX)渲染策略 —— 业界 Rust 怎么做 + 我们怎么选
 
-- 日期:2026-06-14
-- 状态:已采纳(方向定调;落地随 embed 相位 O)
+- 日期:2026-06-14(**2026-06-18 重评:翻转为方案 B,见 §8**)
+- 状态:**已修订** —— 原定 C 起步;现因"逐字 SDF 控制 + 提前渲染"成为优先级,**改 B(RaTeX,数学一等 SDF 公民)为主路**。落地见 [Plan 12](../plan/plan12-math-sdf-first-class.md)。
 - 前置:0004(markdown 管线 / 嵌入)、0007(富媒体嵌入 / 像素对齐)、0010(解析沿用 pulldown-cmark)、0011(quad/SDF 图元)
 - 来源:调研 `~/w/agentscode/{jcode,warp}` + Rust 数学排版生态
 
@@ -51,6 +51,23 @@ LLM 输出常含 LaTeX 数学:行内 `$...$`、显示 `$$...$$`。**解析侧已
 ## 6. 落点
 
 LaTeX 本质是 **embed 子项**(图片→mermaid→**math**→卡片,0007 三层管线)→ [TODO O](../../TODO.md);外加 4A 折行补"行内 embed baseline 盒";升级到 RaTeX 时改走 quad 管线。
+
+## 8. 重评(2026-06-18):翻转为 B —— 数学一等 SDF 公民
+
+**触发**:本期优先级变为"**每个数学字形都是 SDF + Manim 级逐字控制 + 可提前渲染**"。深度调研见 [research/math-latex-sdf-rendering](../research/math-latex-sdf-rendering.md)(5 路检索 + 来源核实)。
+
+**新结论**:C(SVG→纹理)与新优先级**互斥**(opaque 纹理无法逐字、缩放重栅),故**翻转:B(RaTeX)作 v1 主路**,C 退为极端 LaTeX 的兜底。
+
+**关键证据**:
+- **RaTeX 与本引擎同构**:纯 Rust、`ratex-wasm` 一等、原生吐**扁平 DisplayList(定位字形 + 横线)**→ 任意 2D 后端;自带 KaTeX 字体 TTF(可直接栅 SDF)。它的输出 1:1 映射本引擎 `FrameGlyph`/SDF atlas + `FrameRect`。活跃维护(v0.1.11,2026-05,>99.5% KaTeX 覆盖)。
+- **KaTeX/MathJax 不进主路**:KaTeX **不给坐标**(竖直坐标只冻进 CSS `top`,水平坐标交浏览器行内排版——KaTeX issues #537/#587 实证);MathJax 是 JS + 重运行时。二者退为参考/兜底。
+- **OT MATH 表不自研**:RaTeX 走 KaTeX 式"提取度量 + 烤死 TeX 常量"的 CM 字体路线,绑定 TeX 字体即够 TeX 级质量;字体无关(STIX/Cambria)与 MATH 表驱动是后续升级(评估 Typst-math)。
+- **逐字控制 = 复用 0025**:定位字形 → 各自 SDF tile → GpuInstance → 走已有 per-instance 动画(逐字"写出"公式、跨式 morph)= Manim 模型,只是矢量路径换 SDF 实例。
+- **提前渲染**:排版确定性 → 按 TeX hash 缓存 DisplayList,懒填 SDF atlas;不缓存渲染后 HTML/SVG(体积爆炸)。
+
+**接入前唯一硬核实点**:`ratex-types::DisplayItem` 确切字段(字形 char/glyphId + x/y + 字号 + 字体 + rule 矩形)。
+
+**落地**:[Plan 12](../plan/plan12-math-sdf-first-class.md)(解析→RaTeX 排版→映射 FrameGlyph/FrameRect→MSDF atlas→行内/显示接入→缓存→0025 动画→C 兜底)。
 
 ## 7. 来源 / 链接
 

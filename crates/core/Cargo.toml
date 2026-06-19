@@ -12,6 +12,11 @@ tracing.workspace = true
 unicode-segmentation = "1"         # grapheme 分段(smoother / native stub LayoutEngine)
 # markdown 解析用 jcode 的后端中立文档模型(plan2 H1 指定;wasm 安全,纯 pulldown-cmark+unicode-width)
 jcode-render-core = { path = "../../vendor/jcode-render-core" }
+# 数学排版(0013 §8 / Plan 12):TeX → DisplayList(GlyphPath/Line/Rect/Path,绝对 em 坐标)
+# → 映射 FrameGlyph/FrameRect(+Path 相位④)。纯 Rust、WASM 友好。相位① 开始使用。
+ratex-parser = { workspace = true }
+ratex-layout = { workspace = true }
+ratex-types = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"

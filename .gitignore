@@ -6,6 +6,11 @@ DEVMEM.md
 /target
 **/target
 *.rs.bk
+
+# ───────────── 第三方源(只读参考,不入库;通过 git 依赖构建)─────────────
+# RaTeX(数学排版,0013§8/Plan12):本地克隆仅供读源核实真相,构建走 Cargo git 依赖
+# (workspace Cargo.toml 钉 rev)。不把整个 RaTeX 源收进本仓。
+/RaTeX/
 # 库项目通常提交 Cargo.lock；本项目交付 wasm 组件，保留以锁定可复现构建
 # 若改为纯库再决定是否忽略 Cargo.lock
 
@@ -72,3 +77,4 @@ web/public/fonts/lxgw-msdf.*
 lygia
 drei
 onedraw
+RaTex
