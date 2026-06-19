@@ -65,6 +65,11 @@ async function main() {
   }
   // 画布输入(滚轮/触摸板两指滚动/捏合缩放/拖拽平移)在 web 层挂(Plan 6)。
   attachCanvasInput(canvas, chat);
+  // 图片嵌入(Plan 14 ③):每 ~120ms 轮询待解码图 → 浏览器解码/上传(重活在 JS,core 持元数据)。
+  {
+    const { pumpImageLoads } = await import("./image-loader");
+    setInterval(() => pumpImageLoads(chat), 120);
+  }
   // 保活:挂到 window,避免 chat 被 GC 释放(否则帧循环/监听回调会悬空)。
   (window as unknown as { __chat: unknown }).__chat = chat;
 

@@ -429,6 +429,10 @@ struct BlockCache {
     embeds: Vec<crate::EmbedRegion>,
 }
 
+/// 本块一个**已就绪**图片嵌入的绘制信息(Plan 14 ③):
+/// `(embed 下标, alt 占位 glyph 区间, 动图?, 解码自然尺寸, tex_id)`。
+type ReadyEmbed = (usize, (u32, u32), bool, (f32, f32), u32);
+
 /// 每个可见 part 的上屏进度 + 排版缓存。
 struct PartView {
     part_id: String,
@@ -562,6 +566,10 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     /// 数学每 em 的 world px(Plan 12):行内数学用它(贴正文字号),显示数学用 `× DISPLAY_MATH_SCALE`
     /// (H3 字号)。web 启动按正文字号(`FONT_SIZE`,含 DPR)`set_math_em` 注入,默认 32(retina 16px)。
     math_em: f32,
+    /// 图片嵌入注册表(Plan 14 ③):key = `(block_seq<<32)|embed_idx`(append-only 稳定)→ [`Embed`]
+    /// FSM。build_frame 据 `BlockCache.embeds` 补登(Placeholder);`take_pending_images` 交 JS 解码
+    /// (转 Loading);`image_ready`/`image_failed` 回调推进;Ready 时该 key 出纹理 quad。
+    image_registry: std::collections::HashMap<u64, crate::embed::Embed>,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -588,6 +596,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             table_style: TableStyle::default(),
             scheduler: RevealScheduler::new(),
             math_em: 32.0,
+            image_registry: std::collections::HashMap::new(),
         }
     }
 
@@ -612,6 +621,52 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             .get(block_seq)
             .and_then(|v| v.cache.as_ref())
             .map_or(&[], |c| &c.embeds)
+    }
+
+    /// 嵌入稳定 key(Plan 14 ③):`(block_seq<<32)|embed_idx`(append-only ⇒ 跨帧稳定)。
+    fn embed_key(block_seq: usize, embed_idx: usize) -> u64 {
+        ((block_seq as u64) << 32) | embed_idx as u64
+    }
+
+    /// 把各块的图片嵌入补登进注册表(Placeholder;Plan 14 ③)。已登记的保留其 FSM 态(幂等)。
+    /// build_frame 前调,保证新到的图有占位态、JS 可领取解码。
+    fn sync_image_registry(&mut self) {
+        for (vi, view) in self.views.iter().enumerate() {
+            let Some(cache) = &view.cache else { continue };
+            for (ei, region) in cache.embeds.iter().enumerate() {
+                let key = Self::embed_key(vi, ei);
+                self.image_registry
+                    .entry(key)
+                    .or_insert_with(|| crate::embed::Embed::new(&region.url, &region.alt));
+            }
+        }
+    }
+
+    /// 领取待解码图片(Plan 14 ③):Placeholder → Loading,返回 `(key, url)` 交 JS 解码上传。
+    /// JS 完成后调 [`image_ready`](Self::image_ready) / [`image_failed`](Self::image_failed)。
+    pub fn take_pending_images(&mut self) -> Vec<(u64, String)> {
+        let mut out = Vec::new();
+        for (&key, e) in &mut self.image_registry {
+            if e.state == crate::embed::EmbedState::Placeholder {
+                e.begin_loading();
+                out.push((key, e.url.clone()));
+            }
+        }
+        out
+    }
+
+    /// JS 解码 + 纹理上传完成(Plan 14 ③):推进 `key` 的嵌入到 Ready(记 tex_id/自然尺寸/动图标志)。
+    pub fn image_ready(&mut self, key: u64, tex_id: u32, w: f32, h: f32, animated: bool) {
+        if let Some(e) = self.image_registry.get_mut(&key) {
+            e.on_ready(tex_id, w, h, animated);
+        }
+    }
+
+    /// JS 解码/网络失败(Plan 14 ③):`key` 的嵌入 → Failed(显 alt 兜底)。
+    pub fn image_failed(&mut self, key: u64) {
+        if let Some(e) = self.image_registry.get_mut(&key) {
+            e.on_failed();
+        }
     }
 
     /// 开关调试几何叠加(块 AABB / 视口框,Plan 4C3)。
@@ -1144,6 +1199,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// 相机变换在着色器里做;锚底 = 相机 pan.y 跟随底部;块冻结仍在(ensure_layouts)。
     fn build_frame(&mut self) -> FrameData {
         // 排版 + 揭示调度已在 `frame()` 内先行(ensure_layouts → schedule);此处只读状态组帧。
+        self.sync_image_registry(); // Plan 14 ③:新到的图补登占位态,JS 可领取解码
 
         // 1) chat 级盒子布局(Plan 13 §4):角色分组 → Taffy 盒树 → 每 view 盒 origin/width。**收编
         //    手搓 `top += height`**:user 右、assistant 左、一回合一盒(0005)。view 内 glyph 相对位
@@ -1263,6 +1319,9 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         let mut rects: Vec<FrameRect> = Vec::new();
         let mut panels: Vec<FramePanel> = Vec::new();
         let mut widgets: Vec<FrameWidget> = Vec::new();
+        // 图片(Plan 14 ③):Ready 静态图 → 纹理 quad;动图 → DOM overlay 世界矩形(下方按嵌入态填)。
+        let mut images: Vec<crate::FrameImage> = Vec::new();
+        let mut frame_embeds: Vec<crate::FrameEmbed> = Vec::new();
         let mut visible_blocks = 0usize; // 可观测:实际出 glyph 的块数
         let reveal_kind = self.scheduler.table_style(); // 表格揭示风格(驱动面板骨架揭示)
         for id in ids {
@@ -1289,6 +1348,25 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 &mut widgets,
             ); // 4B/6 装饰 + Plan 11 复选框
             let glyphs_before = glyphs.len();
+            // 图片(Plan 14 ③):本块**已就绪**(Ready+纹理)嵌入 → (ei, 占位区间, 动图?, 自然尺寸, tex_id)。
+            // 就绪即隐藏其 alt 占位字(图替之);未就绪(占位/加载/失败)则 alt 照常上屏(兜底)。
+            let ready_embeds: Vec<ReadyEmbed> = cache
+                .embeds
+                .iter()
+                .enumerate()
+                .filter_map(|(ei, region)| {
+                    let e = self.image_registry.get(&Self::embed_key(id, ei))?;
+                    e.is_drawable().then(|| {
+                        (
+                            ei,
+                            region.range,
+                            e.animated,
+                            e.natural_size.unwrap_or((0.0, 0.0)),
+                            e.tex_id,
+                        )
+                    })
+                })
+                .collect();
             for (j, placed) in cache.placed.iter().enumerate() {
                 if cache.clusters[j] == "\n" {
                     continue;
@@ -1298,6 +1376,13 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     .math
                     .iter()
                     .any(|&((s, e), _, _)| (j as u32) >= s && (j as u32) < e)
+                {
+                    continue;
+                }
+                // 图片就绪(Plan 14 ③):该字属某 Ready 嵌入的 alt 占位区间 → 隐藏(纹理 quad 替之)。
+                if ready_embeds
+                    .iter()
+                    .any(|&(_, (s, e), ..)| (j as u32) >= s && (j as u32) < e)
                 {
                     continue;
                 }
@@ -1373,6 +1458,45 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 }
                 rects.extend(mr);
             }
+            // 图片纹理 quad / 动图 overlay(Plan 14 ③):占位盒 = alt 字形 AABB(origin 偏移),尺寸优先
+            // 用解码自然尺寸(④ reportSize 会让排版预留更准)。动图 → FrameEmbed(DOM 自播);否则纹理。
+            for &(ei, (s, e), animated, (nw, nh), tex) in &ready_embeds {
+                let slice = cache
+                    .placed
+                    .get(s as usize..(e as usize).min(cache.placed.len()))
+                    .unwrap_or(&[]);
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for p in slice {
+                    x0 = x0.min(p.pos[0]);
+                    y0 = y0.min(p.pos[1]);
+                    x1 = x1.max(p.pos[0] + p.size[0]);
+                    y1 = y1.max(p.pos[1] + p.size[1]);
+                }
+                if x1 < x0 {
+                    continue; // 区间无墨(异常)
+                }
+                let pos = [x0 + origin[0], y0 + origin[1]];
+                let size = if nw > 0.0 && nh > 0.0 {
+                    [nw, nh]
+                } else {
+                    [x1 - x0, y1 - y0]
+                };
+                if animated {
+                    frame_embeds.push(crate::FrameEmbed {
+                        key: Self::embed_key(id, ei),
+                        pos,
+                        size,
+                    });
+                } else {
+                    images.push(crate::FrameImage {
+                        pos,
+                        size,
+                        tex_id: tex,
+                        alpha: 1.0, // ④ 接 0025 淡入
+                        radius: 6.0,
+                    });
+                }
+            }
             if glyphs.len() > glyphs_before {
                 visible_blocks += 1;
             }
@@ -1413,10 +1537,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         FrameData {
             rects,
             panels,
-            // Plan 14:Ready 嵌入 → 纹理 quad、动图 → DOM overlay 矩形。④ 据 embed FSM 填充;
-            // ②(管线/图元就位)先空。
-            images: Vec::new(),
-            embeds: Vec::new(),
+            images,
+            embeds: frame_embeds,
             widgets,
             glyphs,
             time_ms: self.now_ms as f32,
@@ -2372,6 +2494,69 @@ mod tests {
             (viewport_bottom - max_g_bottom).abs() < 30.0,
             "末行字底应锚在视口下沿(= 末盒 computed bottom): 视口底 {viewport_bottom} vs 字底 {max_g_bottom}"
         );
+    }
+
+    #[test]
+    fn image_embed_ready_emits_frameimage_and_hides_alt() {
+        // Plan 14 ③:`![cat](url)` 未就绪显 alt;领取解码 → Ready → 出纹理 quad、隐藏 alt 占位字。
+        let snap = r#"[{"info":{"id":"m1","sessionID":"s","role":"a"},
+            "parts":[{"type":"text","id":"p1","messageID":"m1","text":"![cat](http://x/c.png)"}]}]"#;
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        assert!(f.images.is_empty(), "未就绪应无纹理 quad");
+        assert!(
+            f.glyphs.iter().any(|g| g.cluster == "c"),
+            "未就绪显 alt 文本"
+        );
+        // 领取待解码 → Ready → 再帧。
+        let pending = eng.take_pending_images();
+        assert_eq!(pending.len(), 1, "一张待解码图");
+        assert_eq!(pending[0].1, "http://x/c.png", "url 透传");
+        eng.image_ready(pending[0].0, 9, 320.0, 200.0, false);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        assert_eq!(f.images.len(), 1, "就绪出纹理 quad");
+        assert_eq!(f.images[0].tex_id, 9);
+        assert!(
+            (f.images[0].size[0] - 320.0).abs() < 0.5,
+            "尺寸 = 解码自然宽"
+        );
+        assert!(
+            !f.glyphs.iter().any(|g| g.cluster == "c"),
+            "就绪应隐藏 alt 占位字"
+        );
+        // 领取后不再重复待解码(已转 Loading)。
+        assert!(eng.take_pending_images().is_empty(), "不重复领取");
+    }
+
+    #[test]
+    fn image_embed_failed_keeps_alt_fallback() {
+        // Plan 14 ③:解码失败 → Failed → 仍显 alt,无纹理 quad。
+        let snap = r#"[{"info":{"id":"m1","sessionID":"s","role":"a"},
+            "parts":[{"type":"text","id":"p1","messageID":"m1","text":"![dog](bad)"}]}]"#;
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        let key = eng.take_pending_images()[0].0;
+        eng.image_failed(key);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        assert!(f.images.is_empty(), "失败无纹理 quad");
+        assert!(f.glyphs.iter().any(|g| g.cluster == "d"), "失败显 alt 兜底");
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use crate::atlas::{Alloc, MsdfAtlas, SdfAtlas, Slot};
 use crate::effects::Globals;
-use crate::scene::{GpuInstance, PanelInstance, RectInstance, WidgetInstance};
+use crate::scene::{GpuInstance, ImageInstance, PanelInstance, RectInstance, WidgetInstance};
 
 /// 共享 SDF 形状库(0026):前置拼接到需要它的 pipeline 源(rect/panel/markdown widget)。
 /// WGSL"声明先于使用",故置于调用方之前。glyph 不需(用自带 sdf_coverage)。
@@ -48,6 +48,10 @@ pub trait RenderBackend {
     fn msdf_loaded(&self) -> bool {
         false
     }
+    /// 上传一张 `w×h` RGBA 图(Plan 14 ②③)→ 返回 `tex_id`(1 起;0 = 失败/不支持)。默认 no-op。
+    fn upload_image(&mut self, _rgba: &[u8], _w: u32, _h: u32) -> u32 {
+        0
+    }
     /// 绘制本帧。`rects` 作背景先于 `glyphs`(同相机/裁剪,Plan 4B);`time_ms`/`fade_ms`
     /// 驱动淡入;`cam_pan`/`cam_zoom` 是 2D 相机(L)。
     #[allow(clippy::too_many_arguments)] // reason: 多类背景图元 + 相机参数;拆 struct 反而绕
@@ -58,6 +62,8 @@ pub trait RenderBackend {
         panels: &[PanelInstance],
         params: &[f32],
         widgets: &[WidgetInstance],
+        images: &[ImageInstance],
+        image_tex_ids: &[u32],
         time_ms: f32,
         fade_ms: f32,
         cam_pan: [f32; 2],
@@ -264,6 +270,14 @@ pub struct WebGpuBackend {
     widget_pipeline: wgpu::RenderPipeline,
     widget_buf: Option<wgpu::Buffer>,
     widget_cap: u64,
+    /// 图片纹理管线(Plan 14 ②):group0 复用 `rect_bind_group`(globals),group1 = per-image 纹理。
+    image_pipeline: wgpu::RenderPipeline,
+    image_tex_layout: wgpu::BindGroupLayout,
+    image_sampler: wgpu::Sampler,
+    /// 已上传图片:`tex_id-1` → (纹理, group1 bind group)。v1 不淘汰(§7 记基准,超阈值再 LRU)。
+    images: Vec<(wgpu::Texture, wgpu::BindGroup)>,
+    image_buf: Option<wgpu::Buffer>,
+    image_cap: u64,
     panel: Option<PanelPipeline>,
 }
 
@@ -528,6 +542,76 @@ impl WebGpuBackend {
             cache: None,
         });
 
+        // 图片管线(Plan 14 ②):纹理 quad。group 0 = globals(复用 rect_bind_layout/group,单 uniform);
+        // group 1 = per-image texture + sampler(每张图一组 bind group,draw 时换绑,warp 同范式)。
+        let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("image-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                with_sdf(&[include_str!("shaders/base/image.wgsl")]).into(),
+            ),
+        });
+        let image_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("image-tex-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("image-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("image-pipeline-layout"),
+                bind_group_layouts: &[&rect_bind_layout, &image_tex_layout],
+                push_constant_ranges: &[],
+            });
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("image-pipeline"),
+            layout: Some(&image_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &image_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[ImageInstance::layout()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         let panel = make_panel(&device, format, &globals_buf);
 
         Ok(Self {
@@ -550,6 +634,12 @@ impl WebGpuBackend {
             widget_pipeline,
             widget_buf: None,
             widget_cap: 0,
+            image_pipeline,
+            image_tex_layout,
+            image_sampler,
+            images: Vec::new(),
+            image_buf: None,
+            image_cap: 0,
             panel,
         })
     }
@@ -594,6 +684,20 @@ impl WebGpuBackend {
             mapped_at_creation: false,
         }));
         self.widget_cap = cap;
+    }
+
+    fn ensure_image_buffer(&mut self, needed: u64) {
+        if self.image_cap >= needed && self.image_buf.is_some() {
+            return;
+        }
+        let cap = needed.next_power_of_two().max(16);
+        self.image_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("image-instances"),
+            size: cap * std::mem::size_of::<ImageInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.image_cap = cap;
     }
 
     /// 上传面板参数(storage buffer,增量改脏区:每帧整写,容量不足才重建+重绑)+ 实例(0018 §2)。
@@ -688,6 +792,59 @@ impl RenderBackend for WebGpuBackend {
         self.msdf.loaded()
     }
 
+    fn upload_image(&mut self, rgba: &[u8], w: u32, h: u32) -> u32 {
+        if w == 0 || h == 0 || rgba.len() < (w as usize) * (h as usize) * 4 {
+            return 0;
+        }
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image-tex"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb, // getImageData = sRGB 字节 → 着色器线性化
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba[..(w as usize) * (h as usize) * 4],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("image-bind-group"),
+            layout: &self.image_tex_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                },
+            ],
+        });
+        self.images.push((texture, bind_group));
+        self.images.len() as u32 // tex_id = 1 起(0 留作"无")
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
@@ -696,6 +853,8 @@ impl RenderBackend for WebGpuBackend {
         panels: &[PanelInstance],
         params: &[f32],
         widgets: &[WidgetInstance],
+        images: &[ImageInstance],
+        image_tex_ids: &[u32],
         time_ms: f32,
         fade_ms: f32,
         cam_pan: [f32; 2],
@@ -730,6 +889,13 @@ impl RenderBackend for WebGpuBackend {
             if let Some(buf) = &self.widget_buf {
                 self.queue
                     .write_buffer(buf, 0, bytemuck::cast_slice(widgets));
+            }
+        }
+        if !images.is_empty() {
+            self.ensure_image_buffer(images.len() as u64);
+            if let Some(buf) = &self.image_buf {
+                self.queue
+                    .write_buffer(buf, 0, bytemuck::cast_slice(images));
             }
         }
         self.upload_panels(panels, params);
@@ -784,6 +950,24 @@ impl RenderBackend for WebGpuBackend {
                     pass.set_bind_group(0, &self.rect_bind_group, &[]);
                     pass.set_vertex_buffer(0, buf.slice(..));
                     pass.draw(0..4, 0..widgets.len() as u32);
+                }
+            }
+            // 图片纹理 quad(Plan 14 ②):图作底、文字压上。每图换 group1(per-image 纹理),逐实例绘。
+            if let Some(buf) = &self.image_buf {
+                if !images.is_empty() {
+                    pass.set_pipeline(&self.image_pipeline);
+                    pass.set_bind_group(0, &self.rect_bind_group, &[]); // globals
+                    pass.set_vertex_buffer(0, buf.slice(..));
+                    for (i, &tex_id) in image_tex_ids.iter().enumerate() {
+                        let Some((_, bg)) = tex_id
+                            .checked_sub(1)
+                            .and_then(|idx| self.images.get(idx as usize))
+                        else {
+                            continue; // 无效 tex_id(未上传)
+                        };
+                        pass.set_bind_group(1, bg, &[]);
+                        pass.draw(0..4, i as u32..i as u32 + 1);
+                    }
                 }
             }
             if let Some(buf) = &self.instance_buf {
@@ -847,13 +1031,15 @@ mod tests {
         );
     }
 
-    /// 0026/Plan 11:markdown widget pipeline = base/sdf + box + widget 拼接产物合法。
+    /// 0026/Plan 11:markdown widget pipeline = base/sdf + box + rule + rule_cat + widget 拼接合法。
+    /// 须与实际 `widget_pipeline` 的 include 列表一致(widget.wgsl 调 `md_rule_cat`,故含 rule_cat)。
     #[test]
     fn markdown_widget_shader_is_valid_wgsl() {
         assert_valid_wgsl(
             &with_sdf(&[
                 include_str!("shaders/markdown/box.wgsl"),
                 include_str!("shaders/markdown/rule.wgsl"),
+                include_str!("shaders/markdown/rule_cat.wgsl"),
                 include_str!("shaders/markdown/widget.wgsl"),
             ]),
             "markdown-widget",

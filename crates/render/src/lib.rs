@@ -16,4 +16,6 @@ pub use atlas::{Alloc, MsdfAtlas, SdfAtlas, Slot, TileAllocator, SDF_BUFFER, TIL
 pub use backend::{RenderBackend, RenderError, WebGpuBackend};
 pub use effects::{EffectProfile, Globals};
 pub use morph::{Geom, NodeId, PanelGeom, PanelScene, Phase, Sample, Scene};
-pub use scene::{glyph_key, GpuInstance, PanelInstance, RectInstance, WidgetInstance};
+pub use scene::{
+    glyph_key, GpuInstance, ImageInstance, PanelInstance, RectInstance, WidgetInstance,
+};

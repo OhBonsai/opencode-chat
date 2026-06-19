@@ -939,7 +939,11 @@ mod tests {
         let md = "![a cat](http://e/cat.png)";
         let spans = parse_markdown(md);
         assert_eq!(render(&spans), "a cat", "可见 = alt,无 url/方括号");
-        assert_eq!(role_of(&spans, "cat"), Some(StyleRole::Image), "占位 role=Image");
+        assert_eq!(
+            role_of(&spans, "cat"),
+            Some(StyleRole::Image),
+            "占位 role=Image"
+        );
         let embeds = parse_markdown_embeds(md);
         assert_eq!(embeds.len(), 1);
         assert_eq!(embeds[0].url, "http://e/cat.png");

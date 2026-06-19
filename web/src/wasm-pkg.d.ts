@@ -53,6 +53,18 @@ declare module "*infinite_chat_wasm.js" {
     pan_by(dx: number, dy: number): void;
     /** 围绕屏幕点(设备像素)缩放;factor>1 放大。 */
     zoom_at(factor: number, sx: number, sy: number): void;
+    /** Plan 14 ③:领取待解码图片,返回 JSON `[{key,url}]`(并转 Loading)。 */
+    take_pending_images(): string;
+    /** Plan 14 ③:上传解码后的 RGBA 首帧(w×h×4 sRGB)→ GPU 纹理 + 推进该 key 到 Ready。 */
+    upload_image_rgba(
+      key: string,
+      rgba: Uint8Array,
+      w: number,
+      h: number,
+      animated: boolean,
+    ): void;
+    /** Plan 14 ③:图片解码/网络失败 → Failed(显 alt 兜底)。 */
+    image_failed(key: string): void;
     /** 设表格面板渲染样式(实时,无需重排/reload)。颜色分量 0..1。 */
     set_table_style(cfg: {
       lineColor?: [number, number, number, number];

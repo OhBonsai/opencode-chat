@@ -399,12 +399,31 @@ impl RenderSink for GpuSink {
                 }
             })
             .collect();
+        // 图片纹理 quad(Plan 14 ②③):纹理已由 upload_image_rgba 上传(tex_id 存于 FrameImage)。
+        let (image_insts, image_tex_ids): (Vec<infinite_chat_render::ImageInstance>, Vec<u32>) =
+            frame
+                .images
+                .iter()
+                .map(|im| {
+                    (
+                        infinite_chat_render::ImageInstance {
+                            pos: im.pos,
+                            size: im.size,
+                            alpha: im.alpha,
+                            radius: im.radius,
+                        },
+                        im.tex_id,
+                    )
+                })
+                .unzip();
         if let Err(e) = self.backend.draw(
             &instances,
             &rects,
             &panels,
             &params,
             &widgets,
+            &image_insts,
+            &image_tex_ids,
             frame.time_ms,
             self.profile.fade_ms(),
             frame.cam_pan,
@@ -516,6 +535,45 @@ impl ChatCanvas {
     pub fn zoom_at(&self, factor: f32, sx: f32, sy: f32) {
         if let Some(app) = self.state.borrow_mut().as_mut() {
             app.engine.zoom_by(factor, sx, sy);
+        }
+    }
+
+    /// 领取待解码图片(Plan 14 ③):返回 JSON `[{key,url}]`(key 为字符串避 u64/JS 精度问题),
+    /// 并把这些嵌入转 Loading。web `image-loader` 每帧轮询 → 解码/上传 → 回调 `image_ready`/`image_failed`。
+    pub fn take_pending_images(&self) -> String {
+        let mut guard = self.state.borrow_mut();
+        let Some(app) = guard.as_mut() else {
+            return "[]".to_string();
+        };
+        let items: Vec<String> = app
+            .engine
+            .take_pending_images()
+            .iter()
+            .map(|(k, url)| format!(r#"{{"key":"{k}","url":{url:?}}}"#))
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
+    /// 图片解码完成(Plan 14 ③):上传 RGBA 首帧到 GPU 纹理 → 推进该 key 嵌入到 Ready(记 tex_id/
+    /// 自然尺寸/动图标志)。`key` = `take_pending_images` 给的字符串;`rgba` = w×h×4 sRGB 字节。
+    pub fn upload_image_rgba(&self, key: &str, rgba: &[u8], w: u32, h: u32, animated: bool) {
+        let Ok(k) = key.parse::<u64>() else { return };
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            let tex_id = app.engine.sink_mut().backend.upload_image(rgba, w, h);
+            if tex_id == 0 {
+                app.engine.image_failed(k); // 上传失败 → alt 兜底
+            } else {
+                app.engine
+                    .image_ready(k, tex_id, w as f32, h as f32, animated);
+            }
+        }
+    }
+
+    /// 图片解码/网络失败(Plan 14 ③):该 key 嵌入 → Failed(显 alt 兜底)。
+    pub fn image_failed(&self, key: &str) {
+        let Ok(k) = key.parse::<u64>() else { return };
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.image_failed(k);
         }
     }
 

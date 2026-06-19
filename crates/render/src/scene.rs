@@ -159,6 +159,38 @@ impl WidgetInstance {
     }
 }
 
+/// 一张图片纹理 quad 的 GPU 实例(对应 image.wgsl 的 `InstanceIn`,Plan 14 ②)。世界坐标 + alpha +
+/// 圆角;纹理不在实例里(`tex_id` 选 per-image bind group,backend 据此换绑)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct ImageInstance {
+    /// 左上角世界坐标(px)。
+    pub pos: [f32; 2],
+    /// 宽高(px)。
+    pub size: [f32; 2],
+    /// 不透明度 0..1(0025 淡入)。
+    pub alpha: f32,
+    /// 圆角半径(px)。
+    pub radius: f32,
+}
+
+impl ImageInstance {
+    /// 顶点缓冲布局(step mode = Instance)。
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+            0 => Float32x2, // pos
+            1 => Float32x2, // size
+            2 => Float32,   // alpha
+            3 => Float32,   // radius
+        ];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ImageInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTRS,
+        }
+    }
+}
+
 /// atlas 字形 key:同一 grapheme 在不同样式角色下是不同 SDF tile,需分桶。
 /// render 与上传方(wasm GpuSink)必须用同一 key。
 pub fn glyph_key(style: u32, cluster: &str) -> String {
