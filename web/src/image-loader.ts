@@ -40,16 +40,25 @@ async function bitmapIsAnimated(blob: Blob): Promise<boolean> {
   }
 }
 
-/** 把 `ImageBitmap` 画到 OffscreenCanvas 取 RGBA 像素(首帧静态纹理源)。 */
-function bitmapToRgba(bmp: ImageBitmap): { rgba: Uint8Array; w: number; h: number } {
-  const w = bmp.width;
-  const h = bmp.height;
-  const cv = new OffscreenCanvas(w, h);
-  const ctx = cv.getContext("2d");
-  if (!ctx) throw new Error("无 2d context");
-  ctx.drawImage(bmp, 0, 0);
-  const data = ctx.getImageData(0, 0, w, h).data;
-  return { rgba: new Uint8Array(data.buffer.slice(0)), w, h };
+/** 把一张图(blob)经 `<img>`+`decode()` 栅格成 RGBA。对 SVG 与位图都稳(createImageBitmap 对 SVG
+ *  blob 在部分浏览器不可靠)。无固有尺寸的 SVG 退默认盒。 */
+async function rasterToRgba(blob: Blob): Promise<{ rgba: Uint8Array; w: number; h: number }> {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = objectUrl;
+    await img.decode();
+    const w = Math.max(1, Math.round(img.naturalWidth || 240));
+    const h = Math.max(1, Math.round(img.naturalHeight || 140));
+    const cv = new OffscreenCanvas(w, h);
+    const ctx = cv.getContext("2d");
+    if (!ctx) throw new Error("无 2d context");
+    ctx.drawImage(img, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    return { rgba: new Uint8Array(data.buffer.slice(0)), w, h };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 /** 解码一张图(url)→ {rgba, w, h, animated}。SVG 走文本嗅探动画 + Image 栅格;位图走 ImageDecoder 判帧。 */
@@ -66,10 +75,8 @@ async function decodeImage(
   } else {
     animated = await bitmapIsAnimated(blob);
   }
-  // 首帧静态(§2.5):createImageBitmap 取一帧(GIF/SVG 同路,浏览器原生栅格)。
-  const bmp = await createImageBitmap(blob);
-  const { rgba, w, h } = bitmapToRgba(bmp);
-  bmp.close();
+  // 首帧静态(§2.5):`<img>` 元素栅格一帧(GIF/SVG/位图同路,浏览器原生)。
+  const { rgba, w, h } = await rasterToRgba(blob);
   return { rgba, w, h, animated };
 }
 
@@ -87,7 +94,10 @@ export function pumpImageLoads(host: ImageHost): void {
     if (inFlight.has(key)) continue;
     inFlight.add(key);
     decodeImage(url)
-      .then(({ rgba, w, h, animated }) => host.upload_image_rgba(key, rgba, w, h, animated))
+      .then(({ rgba, w, h, animated }) => {
+        console.info(`[image-loader] 解码完成 ${url} ${w}×${h} animated=${animated}`);
+        host.upload_image_rgba(key, rgba, w, h, animated);
+      })
       .catch((e) => {
         console.warn(`[image-loader] 解码失败 ${url}:`, e);
         host.image_failed(key);
