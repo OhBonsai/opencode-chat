@@ -601,6 +601,14 @@ impl ChatCanvas {
         }
     }
 
+    /// 设数学每 em 的 world px(Plan 12)= 正文字号(含 DPR)。行内数学贴正文、显示数学 ×1.3(H3)。
+    /// web 启动按 `FONT_SIZE` 注入,使公式与正文同尺度。
+    pub fn set_math_em(&self, px: f32) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.set_math_em(px);
+        }
+    }
+
     /// 重放揭示动画(调试):内容已全部上屏(冻结)时,改风格/速度本身没有待揭的字 → 看不到效果。
     /// 调此清空 spawn,使调度器按**当前**风格/速度从头再揭示一遍。web 下拉改完即调,所见即所设。
     pub fn restart_reveal(&self) {

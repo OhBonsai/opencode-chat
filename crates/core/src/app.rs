@@ -22,8 +22,8 @@ const CATCHUP_SPAWN: f32 = -1.0e9;
 /// 块间纵向间距(px)。
 const BLOCK_GAP: f32 = 8.0;
 
-/// 数学:每 em → px(Plan 12;RaTeX 给 em 相对坐标,乘此摆 world)。约等正文字号,human 可调。
-const MATH_PX: f32 = 18.0;
+/// 显示数学(`$$…$$`)相对行内的字号倍率:= H3(`roleScale` 1.3),更舒展 + 居中。
+const DISPLAY_MATH_SCALE: f32 = 1.3;
 /// 数学字形/规则线颜色(RGBA;暗色主题中性亮);后续可走 theme/可配。
 const MATH_COLOR: [f32; 4] = [0.86, 0.88, 0.92, 1.0];
 /// 数学 glyph 的 `glyph_idx` 基址:远离正文 placed 下标,morph 身份(block_seq,glyph_idx)不撞。
@@ -420,10 +420,10 @@ struct BlockCache {
     table_panels: Vec<crate::TablePanel>,
     /// 内容节点树(0020 / Plan 7):该块结构 + 稳定身份;下游 reveal/embed/morph 的查询地基。
     nodes: crate::nodes::NodeTree,
-    /// 数学块(Plan 12 ②/⑤):每个 `MathDisplay` 节点的 (glyph 区间, RaTeX 排版结果)。在 ensure_layouts
-    /// 算一次(随块冻结缓存,不每帧重排 RaTeX);build_frame 据此出数学 SDF 字形,跳过区间内 raw TeX。
-    /// 仅含排版成功(`ok`)者;失败的退原文 TeX(兜底,相位⑦)。
-    math: Vec<((u32, u32), crate::math::MathLayout)>,
+    /// 数学块(Plan 12 ②/⑤):每个公式的 (glyph 区间, RaTeX 排版结果, 是否显示数学 `$$`)。在
+    /// ensure_layouts 算一次(随块冻结缓存,不每帧重排 RaTeX);build_frame 据此出数学 SDF 字形,跳过
+    /// 区间内 raw TeX。`display=true`(`$$…$$`)= H3 字号 + 居中;`false`(行内 `$…$`)= 正文字号、贴行。
+    math: Vec<((u32, u32), crate::math::MathLayout, bool)>,
 }
 
 /// 每个可见 part 的上屏进度 + 排版缓存。
@@ -527,6 +527,9 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     /// 揭示调度器(0019 §4.3):**唯一**揭示路径,定每个 display 字形的 `spawn_time`(限速 /
     /// 放慢 / 骨架先行),与 token 到达解耦。
     scheduler: RevealScheduler,
+    /// 数学每 em 的 world px(Plan 12):行内数学用它(贴正文字号),显示数学用 `× DISPLAY_MATH_SCALE`
+    /// (H3 字号)。web 启动按正文字号(`FONT_SIZE`,含 DPR)`set_math_em` 注入,默认 32(retina 16px)。
+    math_em: f32,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -552,6 +555,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             last_stats: FrameStats::default(),
             table_style: TableStyle::default(),
             scheduler: RevealScheduler::new(),
+            math_em: 32.0,
         }
     }
 
@@ -780,6 +784,14 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         self.scheduler.set_slow(slow);
     }
 
+    /// 设数学每 em 的 world px(Plan 12):= 正文字号(含 DPR)。行内数学贴此字号,显示数学 ×1.3(H3)。
+    /// web 启动按 `FONT_SIZE` 注入,使公式与正文同尺度(根治"公式太小")。
+    pub fn set_math_em(&mut self, px: f32) {
+        if px > 0.0 {
+            self.math_em = px;
+        }
+    }
+
     /// 设表格揭示风格(0=Raw / 1=RowFrame / 2=Full;0019 §2 三风格)。web 下拉调。
     pub fn set_table_reveal_style(&mut self, style: u32) {
         self.scheduler
@@ -1000,14 +1012,14 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             // 数学(Plan 12 ②③):RaTeX 排版 → 缓存(随块冻结,不每帧重排)。失败者不入(退原文渲染,
             // 兜底相位⑦)。① 显示数学 `$$…$$` = MathDisplay 节点(TeX = 区间字符,无 `$$`,display=true);
             // ② 行内数学 `$…$` = 连续 MathTeX 角色 run(TeX = 去首尾 `$`,display=false)。
-            let mut math: Vec<((u32, u32), crate::math::MathLayout)> = nodes
+            let mut math: Vec<((u32, u32), crate::math::MathLayout, bool)> = nodes
                 .nodes_of_kind(crate::nodes::NodeKind::MathDisplay)
                 .filter_map(|(_, n)| {
                     let tex: String = clusters
                         .get(n.range.0 as usize..n.range.1 as usize)?
                         .concat();
                     let m = crate::math::layout_math(&tex, true);
-                    m.ok.then_some((n.range, m))
+                    m.ok.then_some((n.range, m, true)) // 显示数学
                 })
                 .collect();
             let mathrole = StyleRole::MathTeX.as_u32();
@@ -1024,7 +1036,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 let inner: String = clusters[s..k].concat().trim_matches('$').to_string();
                 let m = crate::math::layout_math(&inner, false);
                 if m.ok {
-                    math.push(((s as u32, k as u32), m));
+                    math.push(((s as u32, k as u32), m, false)); // 行内数学
                 }
             }
             self.views[i].cache = Some(BlockCache {
@@ -1167,7 +1179,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 if cache
                     .math
                     .iter()
-                    .any(|&((s, e), _)| (j as u32) >= s && (j as u32) < e)
+                    .any(|&((s, e), _, _)| (j as u32) >= s && (j as u32) < e)
                 {
                     continue;
                 }
@@ -1200,9 +1212,10 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     anim: enter_profile_id(cache.roles[j], reveal_kind),
                 });
             }
-            // 数学块(Plan 12 ②):RaTeX 排版 → 数学 SDF 字形(em×MATH_PX → world)+ 规则线(分数线等)。
+            // 数学块(Plan 12 ②③):RaTeX 排版 → 数学 SDF 字形(em×px → world)+ 规则线。字号 = 正文
+            // `math_em`(行内贴正文)或 ×1.3 = H3(显示数学,更舒展);显示数学**整式水平居中**。
             // spawn = 该块已揭字最晚上屏时刻(随块揭示淡入);未揭则跳过。glyph_idx 用高位基避免 morph 撞。
-            for &((s, e), ref m) in &cache.math {
+            for &((s, e), ref m, display) in &cache.math {
                 let mut spawn = 0.0f32;
                 let mut revealed = false;
                 for j in s..e {
@@ -1214,14 +1227,24 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 if !revealed {
                     continue; // 该数学块尚未揭示
                 }
-                // origin = 公式盒左上角:x 取 run 首字左缘;y 使**数学基线对齐文本基线**
-                // (文本基线 ≈ 字顶 + 0.8×字高;数学盒基线在盒顶下 height×MATH_PX)→ 行内/显示都贴行。
-                let origin = cache.placed.get(s as usize).map_or([0.0, block_top], |p| {
-                    let baseline = p.pos[1] + block_top + p.size[1] * 0.8;
-                    [p.pos[0], baseline - m.height * MATH_PX]
+                let px = if display {
+                    self.math_em * DISPLAY_MATH_SCALE
+                } else {
+                    self.math_em
+                };
+                // y:数学基线对齐文本基线(文本基线 ≈ 字顶 + 0.8×字高;数学盒基线在盒顶下 height×px)。
+                // x:行内取 run 首字左缘;显示数学**居中**((可见宽 - 整式宽)/2,夹 ≥0)。
+                let pos = cache.placed.get(s as usize).map_or([0.0, block_top], |p| {
+                    [p.pos[0], p.pos[1] + block_top + p.size[1] * 0.8]
                 });
+                let ox = if display {
+                    ((self.max_width - m.width * px) * 0.5).max(0.0)
+                } else {
+                    pos[0]
+                };
+                let origin = [ox, pos[1] - m.height * px];
                 let (mg, mr) =
-                    crate::math::math_to_frame(m, origin, MATH_PX, id as u32, spawn, MATH_COLOR);
+                    crate::math::math_to_frame(m, origin, px, id as u32, spawn, MATH_COLOR);
                 for (k, mut g) in mg.into_iter().enumerate() {
                     g.glyph_idx = MATH_IDX_BASE + s + k as u32;
                     glyphs.push(g);

@@ -5,7 +5,7 @@
 //   open http://localhost:5173/?server=http://localhost:4096&session=<id>   # 接真实 opencode(Phase D)
 
 import init, { ChatCanvas } from "../pkg/infinite_chat_wasm.js";
-import { layout } from "./layout-bridge";
+import { layout, FONT_SIZE } from "./layout-bridge";
 import { rasterize } from "./glyph-raster";
 import { attachCanvasInput } from "./input";
 
@@ -45,6 +45,7 @@ async function main() {
   }
 
   const chat = new ChatCanvas(canvas, { layout, rasterize, serverUrl, sessionId, replay });
+  chat.set_math_em(FONT_SIZE); // 数学字号 = 正文字号(含 DPR);显示数学 ×1.3 = H3(Plan 12)
   chat.start();
   // 画布输入(滚轮/触摸板两指滚动/捏合缩放/拖拽平移)在 web 层挂(Plan 6)。
   attachCanvasInput(canvas, chat);
