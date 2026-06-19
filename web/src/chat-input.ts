@@ -32,13 +32,15 @@ export async function ensureSession(serverUrl: string, sessionId?: string): Prom
   return j.id;
 }
 
-/** 挂载输入框到 `parent`。返回卸载函数(移除 DOM)。 */
+/** 挂载输入框到 `parent`。返回卸载函数(移除 DOM)。`sessionId` 可空 → 首次发送时惰性建会话
+ * (`ensureSession`),故输入框**立即可见**,不依赖服务端/会话先就绪(无服务端则发送时友好报错)。 */
 export function mountChatInput(o: {
   serverUrl: string;
-  sessionId: string;
+  sessionId?: string;
   model: ModelRef;
   parent: HTMLElement;
 }): () => void {
+  let session = o.sessionId; // 惰性:首次发送时建
   const bar = document.createElement("div");
   bar.style.cssText =
     "position:fixed;left:0;right:0;bottom:0;z-index:9000;display:flex;gap:8px;align-items:flex-end;" +
@@ -87,7 +89,8 @@ export function mountChatInput(o: {
     btn.disabled = true;
     clearError();
     try {
-      const r = await fetch(`${o.serverUrl}/session/${o.sessionId}/message`, {
+      if (!session) session = await ensureSession(o.serverUrl); // 惰性建会话(首发)
+      const r = await fetch(`${o.serverUrl}/session/${session}/message`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ parts: [{ type: "text", text }], model: o.model }),

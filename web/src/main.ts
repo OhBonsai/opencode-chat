@@ -48,14 +48,18 @@ async function main() {
   chat.set_math_em(FONT_SIZE); // 数学字号 = 正文字号(含 DPR);显示数学 ×1.3 = H3(Plan 12)
   chat.start();
 
-  // Plan 13 §5:接真实 opencode serve(有 serverUrl、非重放)→ 挂调试输入框,直接 POST 实时对话。
-  // 回包走现有 Rust SSE 渲染(输入框零 wasm/core 改动)。?model= 覆盖默认(同 scripts/chat.mjs)。
-  if (serverUrl && !replay) {
-    const { mountChatInput, ensureSession, parseModel } = await import("./chat-input");
+  // Plan 13 §5:调试输入框直接 POST `/session/{id}/message` 实时对话(回包走现有 Rust SSE 渲染,
+  // 零 wasm/core 改动)。**总是挂载**(立即可见;会话首发时惰性建),serverUrl 缺省用本地 opencode
+  // 默认端口 4096。?model= 覆盖模型(同 scripts/chat.mjs)。?noinput 可关掉(纯看渲染时)。
+  if (!params.has("noinput")) {
+    const { mountChatInput, parseModel } = await import("./chat-input");
     const model = parseModel(params.get("model") ?? "aliyuntokenplan/qwen3.7-max");
-    ensureSession(serverUrl, sessionId)
-      .then((sid) => mountChatInput({ serverUrl, sessionId: sid, model, parent: document.body }))
-      .catch((e) => console.error("[chat-input] 挂载失败", e));
+    mountChatInput({
+      serverUrl: serverUrl ?? "http://localhost:4096",
+      sessionId,
+      model,
+      parent: document.body,
+    });
   }
   // 画布输入(滚轮/触摸板两指滚动/捏合缩放/拖拽平移)在 web 层挂(Plan 6)。
   attachCanvasInput(canvas, chat);
