@@ -226,7 +226,9 @@ pub fn math_to_frame(
         .iter()
         .map(|r| FrameRect {
             pos: [origin[0] + r.dx * math_px, origin[1] + r.dy * math_px],
-            size: [r.w * math_px, (r.h * math_px).max(1.0)],
+            // 线高:TeX 规则厚(~0.04em)在显示尺寸下仅 ~0.8 CSS px → 高 DPI 被 AA 抹没。给一个**随
+            // 字号缩放的可见下限**(em 的 5%,且 ≥1.5px),分数线/根线在大公式下清晰可见。
+            size: [r.w * math_px, (r.h * math_px).max(math_px * 0.05).max(1.5)],
             color,
             radius: 0.0,
             stroke: 0.0,

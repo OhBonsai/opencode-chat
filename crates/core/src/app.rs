@@ -1039,14 +1039,48 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     math.push(((s as u32, k as u32), m, false)); // 行内数学
                 }
             }
+            // 显示数学块高度修正(Plan 12,根治"公式重叠"):JS 只给该块一行 raw TeX 的高,但公式视觉
+            // 高(`(height+depth)×显示px`)常远大于一行 → 上下溢出、与邻块重叠。这里**给每个显示公式
+            // 预留竖直空间**:按块序累加下移 —— `extra_above`(公式高出基线部分超过该行 ascent 的差)下移
+            // 本块及之后,`extra_below`(公式深出基线部分超过行剩余 + 块距的差)再下移其后,块总高同增。
+            let dpx = self.math_em * DISPLAY_MATH_SCALE;
+            let mut placed = result.glyphs;
+            let mut height = result.block_height;
+            let mut displays: Vec<(usize, usize, f32, f32)> = math
+                .iter()
+                .filter(|(_, _, d)| *d)
+                .map(|((s, e), m, _)| (*s as usize, *e as usize, m.height * dpx, m.depth * dpx))
+                .collect();
+            displays.sort_by_key(|&(s, _, _, _)| s);
+            for (s, e, ah, dh) in displays {
+                if s >= placed.len() {
+                    continue;
+                }
+                let line = placed[s].size[1].max(1.0); // 该块 raw TeX 行高
+                let extra_above = (ah - 0.8 * line).max(0.0); // 公式上溢:高出基线超过 ascent 的部分
+                if extra_above > 0.0 {
+                    for p in &mut placed[s..] {
+                        p.pos[1] += extra_above;
+                    }
+                    height += extra_above;
+                }
+                let extra_below = (dh - (0.2 * line + BLOCK_GAP)).max(0.0); // 公式下溢
+                let e2 = e.min(placed.len());
+                if extra_below > 0.0 && e2 < placed.len() {
+                    for p in &mut placed[e2..] {
+                        p.pos[1] += extra_below;
+                    }
+                    height += extra_below;
+                }
+            }
             self.views[i].cache = Some(BlockCache {
                 revealed_len: len,
                 width: self.max_width,
                 clusters,
                 roles,
                 strike,
-                placed: result.glyphs,
-                height: result.block_height,
+                placed,
+                height,
                 // 各表格面板几何(同源 colX/rowY,0018 #5):layout 回传,逐表收敛成一个 SDF 面板。
                 table_panels: result.table_panels,
                 nodes,
@@ -1750,6 +1784,37 @@ mod tests {
                 .iter()
                 .any(|g| g.cluster == "m" && g.style == mathvar),
             "变量 m 应是 MathVar(斜体数学体)"
+        );
+    }
+
+    #[test]
+    fn display_fraction_emits_visible_rule_bar() {
+        // Plan 12:`$$\frac{1}{2}$$` 的分数线 = FrameRect(MATH_COLOR),应入帧且**够粗可见**(非亚像素)。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            500.0,
+            800.0,
+        );
+        eng.set_math_em(32.0);
+        let snap = r#"[{"info":{"id":"m1","sessionID":"s","role":"a"},
+            "parts":[{"type":"text","id":"p1","messageID":"m1","text":"$$\\frac{1}{2}$$"}]}]"#;
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        let bar = f
+            .rects
+            .iter()
+            .find(|r| close(r.color, super::MATH_COLOR))
+            .expect("分数线 rect 应入帧");
+        assert!(bar.size[0] > 4.0, "分数线应有宽度: {}", bar.size[0]);
+        // 可见下限 = em 的 5%(32×1.3×0.05 ≈ 2.08px),高 DPI 不被 AA 抹没。
+        assert!(
+            bar.size[1] >= 2.0,
+            "分数线应够粗可见(≥2px): {}",
+            bar.size[1]
         );
     }
 
