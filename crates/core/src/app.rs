@@ -429,9 +429,12 @@ struct BlockCache {
     embeds: Vec<crate::EmbedRegion>,
 }
 
-/// 本块一个**已就绪**图片嵌入的绘制信息(Plan 14 ③):
-/// `(embed 下标, alt 占位 glyph 区间, 动图?, 解码自然尺寸, tex_id)`。
-type ReadyEmbed = (usize, (u32, u32), bool, (f32, f32), u32);
+/// 本块一个**已就绪**图片嵌入的绘制信息(Plan 14 ③④):
+/// `(embed 下标, alt 占位 glyph 区间, 动图?, 解码自然尺寸, tex_id, alpha 淡入)`。
+type ReadyEmbed = (usize, (u32, u32), bool, (f32, f32), u32, f32);
+
+/// 图片就绪淡入时长(ms,0025 / Plan 14 ④)。
+const IMAGE_FADE_MS: f32 = 200.0;
 
 /// 每个可见 part 的上屏进度 + 排版缓存。
 struct PartView {
@@ -657,8 +660,9 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
 
     /// JS 解码 + 纹理上传完成(Plan 14 ③):推进 `key` 的嵌入到 Ready(记 tex_id/自然尺寸/动图标志)。
     pub fn image_ready(&mut self, key: u64, tex_id: u32, w: f32, h: f32, animated: bool) {
+        let now = self.now_ms as f32;
         if let Some(e) = self.image_registry.get_mut(&key) {
-            e.on_ready(tex_id, w, h, animated);
+            e.on_ready(tex_id, w, h, animated, now);
         }
     }
 
@@ -1363,6 +1367,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                             e.animated,
                             e.natural_size.unwrap_or((0.0, 0.0)),
                             e.tex_id,
+                            e.alpha(self.now_ms as f32, IMAGE_FADE_MS),
                         )
                     })
                 })
@@ -1460,7 +1465,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             }
             // 图片纹理 quad / 动图 overlay(Plan 14 ③):占位盒 = alt 字形 AABB(origin 偏移),尺寸优先
             // 用解码自然尺寸(④ reportSize 会让排版预留更准)。动图 → FrameEmbed(DOM 自播);否则纹理。
-            for &(ei, (s, e), animated, (nw, nh), tex) in &ready_embeds {
+            for &(ei, (s, e), animated, (nw, nh), tex, alpha) in &ready_embeds {
                 let slice = cache
                     .placed
                     .get(s as usize..(e as usize).min(cache.placed.len()))
@@ -1492,7 +1497,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                         pos,
                         size,
                         tex_id: tex,
-                        alpha: 1.0, // ④ 接 0025 淡入
+                        alpha, // 0025 淡入(Plan 14 ④)
                         radius: 6.0,
                     });
                 }

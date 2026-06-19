@@ -30,6 +30,8 @@ pub struct Embed {
     pub natural_size: Option<(f32, f32)>,
     /// 是否动图(GIF/动 WebP/APNG/动画 SVG;v1 显首帧静态,② DOM overlay 自播,§2.5)。
     pub animated: bool,
+    /// 进入 Ready 的帧时刻(ms);用于 alpha 淡入(0025,Plan 14 ④)。None = 未就绪。
+    pub ready_at: Option<f32>,
 }
 
 impl Embed {
@@ -42,6 +44,7 @@ impl Embed {
             tex_id: 0,
             natural_size: None,
             animated: false,
+            ready_at: None,
         }
     }
 
@@ -52,15 +55,28 @@ impl Embed {
         }
     }
 
-    /// 解码 + 纹理就绪:→ Ready,记 tex_id / 自然尺寸 / 动图标志。Failed 后不复活(终态)。
-    pub fn on_ready(&mut self, tex_id: u32, w: f32, h: f32, animated: bool) {
+    /// 解码 + 纹理就绪:→ Ready,记 tex_id / 自然尺寸 / 动图标志 / 就绪时刻(`now` ms,淡入用)。
+    /// Failed 后不复活(终态)。幂等重入不重置 `ready_at`(淡入不重启)。
+    pub fn on_ready(&mut self, tex_id: u32, w: f32, h: f32, animated: bool, now: f32) {
         if self.state == EmbedState::Failed {
             return;
+        }
+        if self.ready_at.is_none() {
+            self.ready_at = Some(now);
         }
         self.state = EmbedState::Ready;
         self.tex_id = tex_id;
         self.natural_size = Some((w.max(0.0), h.max(0.0)));
         self.animated = animated;
+    }
+
+    /// 当前 alpha(0025 淡入):Ready 起 `now-ready_at` 在 `fade_ms` 内 0→1;未就绪 = 0。
+    pub fn alpha(&self, now: f32, fade_ms: f32) -> f32 {
+        match self.ready_at {
+            Some(t) if fade_ms > 0.0 => ((now - t) / fade_ms).clamp(0.0, 1.0),
+            Some(_) => 1.0,
+            None => 0.0,
+        }
     }
 
     /// 解码/网络失败:→ Failed(显 alt 兜底)。Ready 后不回退(已出图,终态)。
@@ -86,7 +102,7 @@ mod tests {
         assert_eq!(e.state, EmbedState::Placeholder);
         e.begin_loading();
         assert_eq!(e.state, EmbedState::Loading);
-        e.on_ready(7, 320.0, 200.0, false);
+        e.on_ready(7, 320.0, 200.0, false, 1000.0);
         assert_eq!(e.state, EmbedState::Ready);
         assert_eq!(e.tex_id, 7);
         assert_eq!(e.natural_size, Some((320.0, 200.0)));
@@ -101,7 +117,7 @@ mod tests {
         assert_eq!(e.state, EmbedState::Failed);
         assert!(!e.is_drawable());
         // Failed 后不被 ready 复活(终态)。
-        e.on_ready(1, 10.0, 10.0, false);
+        e.on_ready(1, 10.0, 10.0, false, 0.0);
         assert_eq!(e.state, EmbedState::Failed);
         assert_eq!(e.alt, "missing"); // alt 兜底文本仍在
     }
@@ -110,9 +126,34 @@ mod tests {
     fn ready_does_not_regress_to_failed() {
         // 已出图后迟到的失败(如 overlay 卸载)不抹掉已就绪纹理。
         let mut e = Embed::new("u", "a");
-        e.on_ready(3, 100.0, 50.0, true);
+        e.on_ready(3, 100.0, 50.0, true, 0.0);
         e.on_failed();
         assert_eq!(e.state, EmbedState::Ready);
         assert!(e.animated);
+    }
+
+    #[test]
+    fn alpha_fades_in_after_ready() {
+        // 0025 淡入:未就绪 = 0;就绪起 fade_ms 内线性 0→1;之后夹 1;重入不重启淡入。
+        let mut e = Embed::new("u", "a");
+        assert!(e.alpha(100.0, 200.0).abs() < 1e-6, "未就绪 alpha=0");
+        e.on_ready(1, 10.0, 10.0, false, 1000.0);
+        assert!(
+            (e.alpha(1000.0, 200.0) - 0.0).abs() < 1e-6,
+            "刚就绪 alpha≈0"
+        );
+        assert!(
+            (e.alpha(1100.0, 200.0) - 0.5).abs() < 1e-6,
+            "半程 alpha=0.5"
+        );
+        assert!(
+            (e.alpha(1300.0, 200.0) - 1.0).abs() < 1e-6,
+            "过淡入期 alpha=1"
+        );
+        e.on_ready(1, 10.0, 10.0, false, 5000.0); // 重入
+        assert!(
+            (e.alpha(1300.0, 200.0) - 1.0).abs() < 1e-6,
+            "重入不重启淡入(ready_at 不变)"
+        );
     }
 }
