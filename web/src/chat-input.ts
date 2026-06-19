@@ -167,6 +167,22 @@ export function mountChatInput(o: {
   o.parent.appendChild(bar);
   o.parent.appendChild(err);
 
+  // 把输入框实测高写入 `--input-h`(画布据此 CSS 扣高,不被遮挡);高度变(多行展开)→ 触发 resize
+  // 让 wasm 重配 surface/视口。CSS 变量每次都更新;resize 只在高度真变时派发,避免打字时每帧重配。
+  let lastBarH = -1;
+  const syncInset = () => {
+    const h = bar.offsetHeight;
+    document.documentElement.style.setProperty("--input-h", `${h}px`);
+    if (h === lastBarH) return;
+    lastBarH = h;
+    window.dispatchEvent(new Event("resize"));
+  };
+  const ro = new ResizeObserver(syncInset);
+  ro.observe(bar);
+  syncInset();
+  // wasm 的 resize 监听在 GPU init 末尾才挂,可能晚于此刻挂载 → 多补几拍 resize 确保后备缓冲重配。
+  for (const d of [300, 1200]) setTimeout(() => window.dispatchEvent(new Event("resize")), d);
+
   // 重连续发:上一步因画布未连而重载到 ?server= 后,画布已连 SSE → 取出暂存消息自动发出。
   if (o.canvasLive) {
     const pending = sessionStorage.getItem(PENDING_KEY);
@@ -179,6 +195,9 @@ export function mountChatInput(o: {
   }
 
   return () => {
+    ro.disconnect();
+    document.documentElement.style.setProperty("--input-h", "0px");
+    window.dispatchEvent(new Event("resize"));
     o.parent.removeChild(bar);
     o.parent.removeChild(err);
   };
