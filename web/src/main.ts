@@ -47,6 +47,16 @@ async function main() {
   const chat = new ChatCanvas(canvas, { layout, measure, rasterize, serverUrl, sessionId, replay });
   chat.set_math_em(FONT_SIZE); // 数学字号 = 正文字号(含 DPR);显示数学 ×1.3 = H3(Plan 12)
   chat.start();
+
+  // Plan 13 §5:接真实 opencode serve(有 serverUrl、非重放)→ 挂调试输入框,直接 POST 实时对话。
+  // 回包走现有 Rust SSE 渲染(输入框零 wasm/core 改动)。?model= 覆盖默认(同 scripts/chat.mjs)。
+  if (serverUrl && !replay) {
+    const { mountChatInput, ensureSession, parseModel } = await import("./chat-input");
+    const model = parseModel(params.get("model") ?? "aliyuntokenplan/qwen3.7-max");
+    ensureSession(serverUrl, sessionId)
+      .then((sid) => mountChatInput({ serverUrl, sessionId: sid, model, parent: document.body }))
+      .catch((e) => console.error("[chat-input] 挂载失败", e));
+  }
   // 画布输入(滚轮/触摸板两指滚动/捏合缩放/拖拽平移)在 web 层挂(Plan 6)。
   attachCanvasInput(canvas, chat);
   // 保活:挂到 window,避免 chat 被 GC 释放(否则帧循环/监听回调会悬空)。

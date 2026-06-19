@@ -2348,4 +2348,35 @@ mod tests {
             "末行字底应锚在视口下沿(= 末盒 computed bottom): 视口底 {viewport_bottom} vs 字底 {max_g_bottom}"
         );
     }
+
+    #[test]
+    fn reflow_shifts_box_origin_into_glyph_endpoints() {
+        // Plan 13⑤(0016 接合):宽度变 → 右对齐 user 盒 origin 变 → glyph **世界位**(补间端点)随之变。
+        // 渲染侧 Scene 按 (block_seq, glyph_idx) 身份补间该端点;此处只验 core 产的端点确随 reflow 更新。
+        let snap = r#"[{"info":{"id":"m1","sessionID":"s","role":"user"},
+            "parts":[{"type":"text","id":"p1","messageID":"m1","text":"hi there"}]}]"#;
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        let right_edge = |f: &super::FrameData| {
+            f.glyphs
+                .iter()
+                .map(|g| g.pos[0] + g.size[0])
+                .fold(f32::MIN, f32::max)
+        };
+        eng.prime_from_snapshot(snap);
+        eng.frame(16.0);
+        let r800 = right_edge(eng.sink().last().expect("frame"));
+        eng.set_max_width(1000.0); // 文档变宽 200 → user 盒右对齐右移 200
+        eng.frame(16.0);
+        let r1000 = right_edge(eng.sink().last().expect("frame"));
+        assert!(
+            (r1000 - r800 - 200.0).abs() < 5.0,
+            "user 盒右沿应随文档宽右移 ~200(origin delta 进端点): {r800} → {r1000}"
+        );
+    }
 }
