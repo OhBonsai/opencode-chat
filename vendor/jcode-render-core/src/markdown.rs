@@ -739,7 +739,10 @@ pub fn parse_markdown(text: &str) -> Document {
                 } else {
                     // 桌面端 = 纹理 quad(Plan 14);TUI = alt。span 文本打包 `url\u{1f}alt`,
                     // role=Image 让前端识别并重建 embed(无 url 字段,故借文本带,见 model.rs)。
-                    spans.push(StyledSpan::new(format!("{url}\u{1f}{alt}"), StyleRole::Image));
+                    spans.push(StyledSpan::new(
+                        format!("{url}\u{1f}{alt}"),
+                        StyleRole::Image,
+                    ));
                 }
             }
 

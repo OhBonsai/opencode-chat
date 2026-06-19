@@ -1,5 +1,7 @@
 # Plan 14 — 图片嵌入 v1:textured quad + Embed 叶子 + FSM(SVG/PNG 同路栅格)
 
+- 状态(2026-06-19):**①–⑥ core/render/wasm/tsc 落地 + 测试通过(整链编译到 wasm32);纹理/动图
+  上屏须人工 GPU + 真 URL**。进度详情 → [plan14_progress.md](./plan14_progress.md)。
 - 日期:2026-06-19
 - 前置:[plan13 §4 Embed 叶子](./plan13-chat-box-layout.md)(Taffy 叶子 + `reportSize` 预留盒)、[0007 富媒体嵌入](../decision/0007-rich-media-embeds.md)、[0011 §3.3 wasm 只持元数据](../decision/0011-gpu-text-as-sdf-primitive.md)、[调研 image-rendering-warp-jcode](../research/image-rendering-warp-jcode.md)(warp 范式 = textured quad)
 - 一句话:图片走**最简单一条路**——浏览器解码/栅格成位图 → GPU **textured quad**;wasm 只持元数据(尺寸/位置);图片在 Taffy 里是一个 **`Embed` 叶子**(`reportSize` 预留盒防 reflow);生命周期一个 **FSM**(Placeholder→Loading→Ready→Failed)。**PNG 与 SVG v1 同路**(SVG 也交浏览器栅格,不做矢量)。
