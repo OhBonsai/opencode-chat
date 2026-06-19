@@ -27,7 +27,11 @@ RaTeX(本地 `RaTeX/` gitignore 工作区,git dep `rev=1e5ae7d`)经核实:
 
 - **② 视觉**:web 侧 `glyph-raster.rasterize` 已按 `fontForRole(26+)→KaTeX_*` 取字体,`main.ts` 预载 KaTeX woff2 + `refresh_fonts`;须浏览器看公式字形上屏、SDF 锐利、定位对(`MATH_PX=18`、baseline `dy-size` 近似可能要微调)。**已知 v1 限**:数学块高度仍用 JS 文本高(非 `math.total_height()`)→ 高公式(`\frac`/`\sum`)可能与邻块间距不准,待块高改用 math 高。
 - **③ 行内 `$...$` baseline 盒**(plan 自评"最复杂"):core 先算盒尺寸(`MathLayout.width/depth`)→ 作不可断"宽字符"占位喂 JS 行排版 → build_frame 摆 math glyph 到盒原点、基线对齐 `depth`。当前只接显示数学 `$$…$$`。
-- **④ Path(根号/大定界符)+ MSDF 尖角**:`DisplayItem::Path`(矢量轮廓)v1 略(多数定界符走 Size1–4 字形,已 atlas 化);极大者 + √钩/∫端的 MSDF 保真 = msdf-atlas-gen 烤 KaTeX TTF,`glyph.wgsl` 已有 MSDF 分支(kind=2)。
+- **④ MSDF(把 RaTeX 的 KaTeX 字体编译成 MSDF)**:
+  - **已做(编译 + 工具)**:`crates/core/tests/dump_katex_charset.rs`(`#[ignore]` 辅助)按 RaTeX 语料收集**每个 KaTeX 字族实际用到的字符集** → `scripts/katex/charset/*.txt`(8 族,~150 字形,已提交)。`scripts/bake-katex-msdf.mjs` 跑 msdf-bmfont 逐族烘 → `web/public/fonts/katex-msdf/<Base>.{json,png}`(per-font BMFont MSDF,gitignore,**已跑通 8/8**)。
+  - **待人工 GPU(运行时接入)**:backend MSDF 是 **D2Array**(页尺寸须统一 = lxgw 2048²),且 8 族 codepoint 重叠(Main 'A' ≠ Math 'A')→ 须把各族 glyph **合成进单页 atlas**(需 png 合成,如 pngjs)并按**合成键 `role*0x110000 + codepoint`**(role=StyleRole 26–40)索引;wasm `resolve` 已就绪(数学角色现走 TinySDF),改为对合成键查 MSDF(命中)→ 未命中回退 TinySDF;web 加 `load_math_msdf`(同 `loadMsdf` 路)。`msdf_node` 几何复用(数学 glyph 也是带 pos/size 的 `FrameGlyph`)。
+  - **Path(根号/大定界符)**:多数定界符走 Size1–4 字形(已 atlas 化);`DisplayItem::Path` 矢量轮廓暂略。
+  - 现状:数学走 **TinySDF + KaTeX woff2**(`resolve` 对角色 26–40 直接 TinySDF,跳过 lxgw MSDF 落空查),已可用、缩放略软;上面合并落地后即 MSDF 锐利。
 - **⑤ 缓存**:按 TeX hash 缓存 `MathLayout`(排版确定性);atlas 按 `(role,char,size)` 现成 LRU。`math_to_frame` 已确定性,接缓存即可。
 - **⑥ 逐字动画**:数学 glyph = `GpuInstance` + `anim` profile → Plan 10/0025:逐符号"写出"、跨式 morph。`FrameGlyph.anim` 字段已在。
 - **⑦ 兜底**:`layout_math` 已返回 `ok=false`(RaTeX 不支持)→ 上游退 MathJax→SVG embed(0013 C)或显式占位。

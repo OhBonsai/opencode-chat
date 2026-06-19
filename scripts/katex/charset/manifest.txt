@@ -1,0 +1,8 @@
+Caligraphic-Regular
+Fraktur-Regular
+Main-Regular
+Math-Italic
+Size1-Regular
+Size2-Regular
+Size3-Regular
+Size4-Regular
