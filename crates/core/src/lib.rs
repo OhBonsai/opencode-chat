@@ -61,7 +61,9 @@ pub use seam::{
     Clock, Connection, LayoutEngine, LayoutResult, MeasuredSize, PlacedGlyph, RawEvent, RenderSink,
     TablePanel,
 };
-pub use shaderbox::{IconId, ShaderId, SHADERBOX_THROTTLE_MS};
+pub use shaderbox::{
+    shaderbox_exceeds_area_cap, IconId, ShaderId, SHADERBOX_MAX_EDGE_PX, SHADERBOX_THROTTLE_MS,
+};
 pub use smoother::{Revealed, Smoother};
 pub use spatial::SpatialGrid;
 pub use store::{Role, Store};

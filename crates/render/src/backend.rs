@@ -691,6 +691,13 @@ impl WebGpuBackend {
                 include_str!("shaders/shaderbox/glow_orb.wgsl"),
                 "shaderbox-glow-orb",
             ),
+            make_shaderbox_pipeline(
+                &device,
+                format,
+                &rect_bind_layout,
+                include_str!("shaders/shaderbox/raymarch.wgsl"),
+                "shaderbox-raymarch",
+            ),
         ];
 
         let panel = make_panel(&device, format, &globals_buf);
@@ -1175,6 +1182,18 @@ mod tests {
             include_str!("shaders/shaderbox/fs.wgsl"),
         );
         assert_valid_wgsl(&src, "shaderbox-glow-orb");
+    }
+
+    /// Plan 16 ⑤:ShaderBox raymarch(common + raymarch + fs)合法(收编 0024 §4B 留位)。
+    #[test]
+    fn shaderbox_raymarch_shader_is_valid_wgsl() {
+        let src = format!(
+            "{}\n{}\n{}",
+            include_str!("shaders/shaderbox/common.wgsl"),
+            include_str!("shaders/shaderbox/raymarch.wgsl"),
+            include_str!("shaders/shaderbox/fs.wgsl"),
+        );
+        assert_valid_wgsl(&src, "shaderbox-raymarch");
     }
 
     /// 0026/Plan 11:markdown widget pipeline = base/sdf + box + rule + rule_cat + widget 拼接合法。

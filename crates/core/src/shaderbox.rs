@@ -25,6 +25,17 @@ impl ShaderId {
 /// ShaderBox 动效节流间隔(ms;护栏4,默认 30fps)。dynamic box 的 `time` 按此步进,与主 rAF 解耦。
 pub const SHADERBOX_THROTTLE_MS: f32 = 1000.0 / 30.0;
 
+/// 面积/分辨率封顶边长(world px;护栏3,Plan 16 §2.3)。单 box 任一边超此阈 → 应渲到上限分辨率
+/// 离屏纹理再放大(downscale),避免巨 box 满屏跑昂贵片元。v1 仅留判定钩子(downscale 路径后续;
+/// 当前内置 box ≤ 32px 不触发)。
+pub const SHADERBOX_MAX_EDGE_PX: f32 = 512.0;
+
+/// box 是否超面积封顶(超 → 走 downscale 路径,v1 暂跳过该 box)。护栏3 判定钩子。
+#[must_use]
+pub fn shaderbox_exceeds_area_cap(size: [f32; 2]) -> bool {
+    size[0] > SHADERBOX_MAX_EDGE_PX || size[1] > SHADERBOX_MAX_EDGE_PX
+}
+
 /// PixelSpiritDeck 整盘 icon(§2.5b;值 = 源 case 号,0..=49)。`params[0]` 取 `as u32 as f32`。
 /// `dynamic()` 区分呼吸/旋转(46 个)与纯静态(4 个:Void/TheTemple/TheHermit/Enlightenment)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,5 +195,24 @@ mod tests {
     fn aliases_map_into_deck() {
         assert!(IconId::copy().as_u32() <= 49);
         assert!(IconId::spinner().is_dynamic(), "spinner 应是动画");
+    }
+
+    #[test]
+    fn area_cap_triggers_only_for_oversized_boxes() {
+        // 护栏3:内置小 box(18/32px)不触发封顶;超阈巨 box 触发(走 downscale 钩子)。
+        assert!(!shaderbox_exceeds_area_cap([18.0, 18.0]));
+        assert!(!shaderbox_exceeds_area_cap([32.0, 32.0]));
+        assert!(!shaderbox_exceeds_area_cap([
+            SHADERBOX_MAX_EDGE_PX,
+            SHADERBOX_MAX_EDGE_PX
+        ]));
+        assert!(shaderbox_exceeds_area_cap([
+            SHADERBOX_MAX_EDGE_PX + 1.0,
+            10.0
+        ]));
+        assert!(shaderbox_exceeds_area_cap([
+            10.0,
+            SHADERBOX_MAX_EDGE_PX + 1.0
+        ]));
     }
 }
