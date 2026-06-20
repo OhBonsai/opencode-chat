@@ -165,6 +165,12 @@ export function isMathRole(role: number): boolean {
   return role >= 26 && role <= 40;
 }
 
+/// 代码**块**角色(Plan 15:CodeBlock=5、CodeLineNum=43、语法高亮 Code* 44–50)。**整行不折**——超宽
+/// 交代码块视口横滚 + 裁(行号 gutter 之右)。注:行内 code(role 4)随段落正常折,不在内。
+function isCodeBlockRole(role: number): boolean {
+  return role === 5 || (role >= 43 && role <= 50);
+}
+
 /// 标题分级字号倍率(4A3):H1=2.0 … H6=0.9;非标题 1.0。
 function roleScale(role: number): number {
   switch (role) {
@@ -544,11 +550,13 @@ export function layout(
       i++;
       continue;
     }
-    // 取一个"词":表格行整行不可断;CJK 单字;否则累加到空格(含)或下一个 CJK / 换行。
+    // 取一个"词":表格行/代码块行整行不可断;CJK 单字;否则累加到空格(含)或下一个 CJK / 换行。
+    const noWrap = g.inTable || isCodeBlockRole(g.role);
     let j = i;
     let wordW = 0;
-    if (g.inTable) {
-      // 表格行(5E.1 #6):整行作一个不可断"词" → 超宽溢到画布(可横向 pan),不拦腰折断。
+    if (noWrap) {
+      // 表格行(5E.1 #6)/ 代码块行(Plan 15):整行作不可断"词" → 超宽溢出(表格横 pan、代码块视口横滚
+      // + 裁,⑤),不拦腰折断;故也跳过下面的折行判定。
       while (j < gs.length && !gs[j].nl) {
         wordW += gs[j].adv;
         j++;
@@ -563,8 +571,8 @@ export function layout(
         if (gs[j - 1].space) break; // 词以空格收尾
       }
     }
-    // 折行:词溢出且不在行首;行首禁则字则悬挂(不折)。
-    if (penX + wordW > maxWidth && penX > 0 && !isHeadBan(g.cluster)) {
+    // 折行:词溢出且不在行首;行首禁则字则悬挂(不折)。代码块/表格整行 noWrap → 不折。
+    if (!noWrap && penX + wordW > maxWidth && penX > 0 && !isHeadBan(g.cluster)) {
       penX = 0;
       lineY += lineH;
       lineH = LINE_HEIGHT;

@@ -495,6 +495,8 @@ const IMAGE_FADE_MS: f32 = 200.0;
 /// 复制图标边长 / 内边距(world px,Plan 15 ③)。
 const COPY_ICON_PX: f32 = 18.0;
 const COPY_ICON_PAD: f32 = 6.0;
+/// 代码块上/下外边距(world px,Plan 15 ⑥):代码框与上下内容之间的留白。
+const CODE_BLOCK_MARGIN: f32 = 10.0;
 
 /// 每个可见 part 的上屏进度 + 排版缓存。
 struct PartView {
@@ -1294,6 +1296,11 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 if s >= e {
                     continue;
                 }
+                // 块上边距(Plan 15 ⑥):本块及其后整体下移 → 代码框与上方内容留白(不贴脸)。
+                for p in &mut placed[s..] {
+                    p.pos[1] += CODE_BLOCK_MARGIN;
+                }
+                height += CODE_BLOCK_MARGIN;
                 let (mut top_y, mut bot_y, mut line_h) = (f32::MAX, f32::MIN, 0.0f32);
                 // 代码内容起始 x = 首个**代码内容**字左缘(含高亮各角色;行号 gutter 之右)。横裁左界(⑤)。
                 let mut code_x0 = f32::MAX;
@@ -1323,6 +1330,11 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     }
                     height -= excess;
                 }
+                // 块下边距(Plan 15 ⑥):块后内容下移 → 代码框与下方内容留白。
+                for p in &mut placed[e..] {
+                    p.pos[1] += CODE_BLOCK_MARGIN;
+                }
+                height += CODE_BLOCK_MARGIN;
                 code_blocks.push(CodeView {
                     range: (s as u32, e as u32),
                     top_y,
