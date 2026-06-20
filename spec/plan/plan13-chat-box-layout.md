@@ -266,7 +266,7 @@ export function mountChatInput(o: {
 - **绝对偏移累加**:taffy `Layout.location` 相对父 → DFS 累加 `abs_origin`,O(节点);只对活动子树重算,前缀缓存。
 - **wasm 包体**:+taffy(纯 Rust,中等);`grid` 不开省一截。基准记包体 delta。
 - **契约扩张**(0023 §9):content→layout 从「扁平 run + sidecar」升到「节点树 + Taffy 样式 + measure 回调」,改动面大;Tier A→B→C 分相位降风险(A 独立可上屏,B/C 回归守等价)。
-- **Open**:① tool/reasoning 各自渲染+动画(§2.2)的分相位——结构定「同盒不另气泡」,呈现单独排期;② user 富语法(0006/0007)单独排期;③ 角色分栏 + §2.3 动画接缝纪律是否回填 **ADR 0027**(现散在 0005/0000/本 plan,落地后建议上提)。
+- **Open**:① tool/reasoning 各自渲染+动画(§2.2)的分相位——结构定「同盒不另气泡」,呈现单独排期;② user 富语法(0006/0007)单独排期;③ 角色分栏 + §2.3 动画接缝纪律是否回填**一条新 ADR**(取落地时下一个空号;现散在 0005/0000/本 plan,落地后建议上提)。
 
 ## 11. Done
 
@@ -274,5 +274,5 @@ export function mountChatInput(o: {
 
 ## 12. 关联
 
-- decision:[0023](../decision/0023-taffy-box-layout.md)(主)/ [0020](../decision/0020-content-node-identity-model.md)(`nodes.rs` 树)/ [0005](../decision/0005-turn-aggregation-and-settlement.md)(角色/turn 硬约束)/ [0016](../decision/0016-streaming-morph-render-model.md)(盒位过渡)/ [0019](../decision/0019-reveal-gating-and-choreography.md)·[0025](../decision/0025-sdf-node-animation-system.md)(揭示/盒内动画,§2.3)/ [0002](../decision/0002-event-driven-pipeline.md)(Part FSM)/ [0014](../decision/0014-table-two-pass-layout.md)(measure+补间样板)/ [0021](../decision/0021-js-rust-boundary-and-configurable-render.md)(样式数据/measure 边界)/ [0001 §2.2](../decision/0001-canvas-architecture.md)(measureText 护城河);可上提 **ADR 0027**。
+- decision:[0023](../decision/0023-taffy-box-layout.md)(主)/ [0020](../decision/0020-content-node-identity-model.md)(`nodes.rs` 树)/ [0005](../decision/0005-turn-aggregation-and-settlement.md)(角色/turn 硬约束)/ [0016](../decision/0016-streaming-morph-render-model.md)(盒位过渡)/ [0019](../decision/0019-reveal-gating-and-choreography.md)·[0025](../decision/0025-sdf-node-animation-system.md)(揭示/盒内动画,§2.3)/ [0002](../decision/0002-event-driven-pipeline.md)(Part FSM)/ [0014](../decision/0014-table-two-pass-layout.md)(measure+补间样板)/ [0021](../decision/0021-js-rust-boundary-and-configurable-render.md)(样式数据/measure 边界)/ [0001 §2.2](../decision/0001-canvas-architecture.md)(measureText 护城河);可上提**一条新 ADR**(角色分栏模型,取落地时下一个空号)。
 - Code 入口:`crates/core/src/app.rs::build_frame`(~1060,被收编)·`PartView`(:430,加 role)·`view_mut`(~1337)/ `crates/core/src/seam.rs::LayoutEngine`(加 measure)·`PlacedGlyph`/`TablePanel`/`LayoutResult`/ `crates/core/src/store.rs`(:93 part_session 旁加 part_role)/ `crates/core/src/nodes.rs`(`NodeTree`→Taffy)/ `crates/core/src/boxlayout.rs`(**新**,`ChatTree`)/ `crates/wasm/src/lib.rs`(:683 `LayoutBridge` 加 measure_fn)/ `web/src/layout-bridge.ts::layout`(拆 measure)/ `web/src/main.ts`(config + 挂 chat-input)/ `web/src/chat-input.ts`(**新**)/ `scripts/chat.mjs`(POST 范本)/ knowledge/opencode.md §4(发消息契约)。
