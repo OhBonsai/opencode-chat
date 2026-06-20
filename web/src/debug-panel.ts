@@ -22,6 +22,8 @@ interface ChatStats {
   glyphsTotal: number;
   blocksVisible: number;
   blocksTotal: number;
+  shaderboxActive: number;
+  shaderboxPixels: number;
   atlasUsed: number;
   atlasCap: number;
   atlasEvict: number;
@@ -166,6 +168,7 @@ export function mountDebugPanel(chat: ChatCanvas, parent: HTMLElement = document
       row("dropped/s", fmt(s.dropped)),
       row("glyphs", `${fmt(s.glyphsVisible)} / ${fmt(s.glyphsTotal)}`),
       row("blocks", `${fmt(s.blocksVisible)} / ${fmt(s.blocksTotal)}`),
+      row("shaderbox", `${fmt(s.shaderboxActive)} (${fmt(s.shaderboxPixels)}px)`),
       row("atlas", `${fmt(s.atlasUsed)} / ${fmt(s.atlasCap)}`, thrash ? "#f38ba8" : undefined),
       row("evict", fmt(s.atlasEvict)),
       row("src B/T/M", `${fmt(s.srcBitmap)} / ${fmt(s.srcTinySdf)} / ${fmt(s.srcMsdf)}`),

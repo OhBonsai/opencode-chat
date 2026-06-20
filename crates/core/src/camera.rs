@@ -30,6 +30,17 @@ impl Rect {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
+
+    /// 与另一矩形的重叠面积(无交叠 = 0)。ShaderBox 度量「屏上像素」用(Plan 16 §2.4)。
+    pub fn overlap_area(&self, o: &Rect) -> f32 {
+        let ix = (self.x + self.w).min(o.x + o.w) - self.x.max(o.x);
+        let iy = (self.y + self.h).min(o.y + o.h) - self.y.max(o.y);
+        if ix <= 0.0 || iy <= 0.0 {
+            0.0
+        } else {
+            ix * iy
+        }
+    }
 }
 
 /// 2D 相机。
@@ -156,5 +167,14 @@ mod tests {
         cam.zoom_at(2.0, 0.0, 0.0);
         cam.pan_by_screen(0.0, 100.0); // 屏幕 100px → 世界 50
         assert!((cam.pan()[1] - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlap_area_clips_to_intersection() {
+        // ShaderBox 度量(Plan 16 §2.4):重叠 = 交集面积,无交 = 0,全覆盖 = 自身面积。
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0);
+        assert!((a.overlap_area(&Rect::new(5.0, 5.0, 10.0, 10.0)) - 25.0).abs() < 1e-3); // 5×5 角交
+        assert!(a.overlap_area(&Rect::new(20.0, 0.0, 5.0, 5.0)).abs() < 1e-3); // 右侧无交
+        assert!((a.overlap_area(&a) - 100.0).abs() < 1e-3); // 全覆盖
     }
 }

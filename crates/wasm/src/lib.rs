@@ -48,6 +48,8 @@ struct StatsSnapshot {
     glyphs_total: usize,
     blocks_visible: usize,
     blocks_total: usize,
+    shaderbox_active: usize,
+    shaderbox_pixels: u64,
     atlas_used: usize,
     atlas_cap: usize,
     atlas_evict: u64,
@@ -525,6 +527,8 @@ impl ChatCanvas {
         set("glyphsTotal", s.glyphs_total as f64);
         set("blocksVisible", s.blocks_visible as f64);
         set("blocksTotal", s.blocks_total as f64);
+        set("shaderboxActive", s.shaderbox_active as f64);
+        set("shaderboxPixels", s.shaderbox_pixels as f64);
         set("atlasUsed", s.atlas_used as f64);
         set("atlasCap", s.atlas_cap as f64);
         set("atlasEvict", s.atlas_evict as f64);
@@ -942,6 +946,8 @@ async fn init_and_run(
                     glyphs_total: st.total_glyphs,
                     blocks_visible: st.visible_blocks,
                     blocks_total: st.total_blocks,
+                    shaderbox_active: st.shaderbox_active,
+                    shaderbox_pixels: st.shaderbox_pixels,
                     atlas_used: used,
                     atlas_cap: cap,
                     atlas_evict: evict,
@@ -950,8 +956,9 @@ async fn init_and_run(
                 };
                 if debug {
                     tracing::info!(target: "perf",
-                        "fps={fps:.0} frame_ms(avg={avg:.1} max={:.1}) dropped={perf_dropped} glyphs={}/{} blocks={}/{} atlas={used}/{cap} evict={evict}",
-                        perf_max_ms, st.frame_glyphs, st.total_glyphs, st.visible_blocks, st.total_blocks);
+                        "fps={fps:.0} frame_ms(avg={avg:.1} max={:.1}) dropped={perf_dropped} glyphs={}/{} blocks={}/{} sbox={}({}px) atlas={used}/{cap} evict={evict}",
+                        perf_max_ms, st.frame_glyphs, st.total_glyphs, st.visible_blocks, st.total_blocks,
+                        st.shaderbox_active, st.shaderbox_pixels);
                 }
             }
             perf_frames = 0;

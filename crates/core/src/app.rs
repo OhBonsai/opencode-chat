@@ -559,6 +559,10 @@ pub struct FrameStats {
     pub visible_blocks: usize,
     /// 可绘制块总数。
     pub total_blocks: usize,
+    /// 本帧屏上活跃 ShaderBox 数(经 cull 后;离屏不计)。护栏度量(Plan 16 §2.4)。
+    pub shaderbox_active: usize,
+    /// 屏上 ShaderBox 像素和(Σ box∩viewport 面积;离屏/裁剪外不计)。
+    pub shaderbox_pixels: u64,
 }
 
 /// 每帧编排引擎。`C` 事件源、`L` 排版、`R` 渲染汇均经 seam 注入(CR2)。
@@ -1485,6 +1489,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         let mut frame_embeds: Vec<crate::FrameEmbed> = Vec::new();
         // shader 画板(Plan 16):代码块 copy icon(§2.7 程序化)等;护栏 = 仅可见块(cull)+ 节流时钟。
         let mut shaderboxes: Vec<crate::FrameShaderBox> = Vec::new();
+        let mut shaderbox_pixels: u64 = 0; // 护栏度量:屏上 box∩viewport 面积和(Plan 16 §2.4)
         let mut visible_blocks = 0usize; // 可观测:实际出 glyph 的块数
         let mut hit_rects: Vec<(u64, Rect)> = Vec::new(); // Plan 15 ④:代码块行窗世界命中矩形
         let reveal_kind = self.scheduler.table_style(); // 表格揭示风格(驱动面板骨架揭示)
@@ -1756,20 +1761,35 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             // 随 icon 标志(呼吸);time 取节流时钟(护栏4)。
             for cb in &cache.code_blocks {
                 let icon = crate::IconId::copy();
+                let pos = [
+                    origin[0] + box_w - COPY_ICON_PX - COPY_ICON_PAD,
+                    origin[1] + cb.top_y + COPY_ICON_PAD,
+                ];
+                // 护栏1 cull:box 世界 rect ∉ 视口 → 不发(离屏零耗,不计度量)。
+                let box_rect = Rect::new(pos[0], pos[1], COPY_ICON_PX, COPY_ICON_PX);
+                if !box_rect.intersects(&visible) {
+                    continue;
+                }
                 let mut params = [0.0f32; 8];
                 params[0] = icon.as_u32() as f32;
+                let dynamic = icon.is_dynamic();
                 shaderboxes.push(crate::FrameShaderBox {
-                    pos: [
-                        origin[0] + box_w - COPY_ICON_PX - COPY_ICON_PAD,
-                        origin[1] + cb.top_y + COPY_ICON_PAD,
-                    ],
+                    pos,
                     size: [COPY_ICON_PX, COPY_ICON_PX],
                     shader_id: crate::ShaderId::Icons.as_u32(),
                     params,
                     bg: [0.0, 0.0, 0.0, 0.0],
-                    time: self.shaderbox_clock.time_s(),
-                    dynamic: icon.is_dynamic(),
+                    // 护栏2 静态即冻:静态 icon 不喂 time(常量 → GPU 结果逐帧不变,可冻复用);
+                    // 仅 dynamic 走节流时钟(护栏4,30fps)。
+                    time: if dynamic {
+                        self.shaderbox_clock.time_s()
+                    } else {
+                        0.0
+                    },
+                    dynamic,
                 });
+                // 度量:屏上像素 = box∩viewport 面积(护栏度量,离屏已 cull 不计)。
+                shaderbox_pixels += box_rect.overlap_area(&visible).round().max(0.0) as u64;
             }
             if glyphs.len() > glyphs_before {
                 visible_blocks += 1;
@@ -1808,6 +1828,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             total_glyphs,
             visible_blocks,
             total_blocks: drawable.len(),
+            shaderbox_active: shaderboxes.len(),
+            shaderbox_pixels,
         };
         FrameData {
             rects,
@@ -2992,6 +3014,50 @@ mod tests {
             "params[0] = copy icon_id"
         );
         assert!(f.images.is_empty(), "不再用纹理 quad 画 copy 图标");
+    }
+
+    #[test]
+    fn shaderbox_metrics_count_onscreen_pixels() {
+        // Plan 16 ②/§2.4:屏上 copy 图标计入 shaderbox_active + shaderbox_pixels(Σ 18² 面积)。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        prime_code(&mut eng, 8);
+        let st = eng.frame_stats();
+        assert!(st.shaderbox_active >= 1, "应有活跃 ShaderBox");
+        // 全屏内每个 18×18 box → 像素 = active × 324。
+        assert_eq!(
+            st.shaderbox_pixels,
+            st.shaderbox_active as u64 * 18 * 18,
+            "屏上像素 = Σ box 面积"
+        );
+    }
+
+    #[test]
+    fn shaderbox_culled_when_offscreen() {
+        // Plan 16 护栏1:copy 图标随代码块滚出视口 → 不发、不计度量(离屏零耗)。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        prime_code(&mut eng, 8);
+        assert!(eng.frame_stats().shaderbox_active >= 1, "初始应在屏上");
+        eng.pan_by(5000.0, 0.0); // 水平移开整篇(锚底只管 y,x 保留)
+        eng.frame(16.0);
+        let st = eng.frame_stats();
+        assert_eq!(st.shaderbox_active, 0, "离屏应 cull");
+        assert_eq!(st.shaderbox_pixels, 0, "离屏不计像素");
+        assert!(
+            eng.sink().last().expect("frame").shaderboxes.is_empty(),
+            "离屏不发 ShaderBox"
+        );
     }
 
     #[test]

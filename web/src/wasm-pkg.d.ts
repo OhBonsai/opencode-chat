@@ -29,6 +29,8 @@ declare module "*infinite_chat_wasm.js" {
     glyphsTotal: number;
     blocksVisible: number;
     blocksTotal: number;
+    shaderboxActive: number;
+    shaderboxPixels: number;
     atlasUsed: number;
     atlasCap: number;
     atlasEvict: number;
