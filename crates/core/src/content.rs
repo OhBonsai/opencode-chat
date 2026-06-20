@@ -104,9 +104,61 @@ pub enum StyleRole {
     /// 代码块行号(Plan 15 ②,§2.4):每行前置右对齐行号 + 分隔,弱化(Dim 小号)。行窗随纵滚、横滚
     /// 固定(gutter)。值 43。
     CodeLineNum,
+    // 代码语法高亮(research 路 A,8 色塌缩):scope → 8 个语义角色 → 0021 调色板,render 零改。
+    // `CodePlain` = 复用 `CodeBlock`(值 5)。下列 7 个值 44–50,尾部追加不移位(守 0001)。
+    /// 关键字(`fn`/`def`/`if`…)。值 44。
+    CodeKeyword,
+    /// 类型(`u32`/`String`/CamelCase…)。值 45。
+    CodeType,
+    /// 函数名(后随 `(`)。值 46。
+    CodeFunc,
+    /// 字符串字面量。值 47。
+    CodeString,
+    /// 注释。值 48。
+    CodeComment,
+    /// 数字字面量。值 49。
+    CodeNumber,
+    /// 标点 / 运算符。值 50。
+    CodePunct,
 }
 
 impl StyleRole {
+    /// 是否**代码内容**字(代码块正文,含高亮各类;不含行号 gutter)。Plan 15 行窗/横裁/底框判据。
+    pub fn is_code_text(self) -> bool {
+        matches!(
+            self,
+            StyleRole::CodeBlock
+                | StyleRole::CodeKeyword
+                | StyleRole::CodeType
+                | StyleRole::CodeFunc
+                | StyleRole::CodeString
+                | StyleRole::CodeComment
+                | StyleRole::CodeNumber
+                | StyleRole::CodePunct
+        )
+    }
+
+    /// 同 [`is_code_text`](Self::is_code_text) 但吃角色数值(app.rs 持 `Vec<u32>` roles 用):
+    /// `CodeBlock`(5)或高亮 7 角色(44–50)。
+    pub(crate) fn is_code_text_u32(role: u32) -> bool {
+        role == StyleRole::CodeBlock as u32 || (44..=50).contains(&role)
+    }
+
+    /// 高亮语义类 → 渲染角色(`Plain` 复用 `CodeBlock`,余 7 类各自角色)。
+    pub(crate) fn from_code_class(cls: crate::highlight::CodeClass) -> StyleRole {
+        use crate::highlight::CodeClass as C;
+        match cls {
+            C::Plain => StyleRole::CodeBlock,
+            C::Keyword => StyleRole::CodeKeyword,
+            C::Type => StyleRole::CodeType,
+            C::Func => StyleRole::CodeFunc,
+            C::String => StyleRole::CodeString,
+            C::Comment => StyleRole::CodeComment,
+            C::Number => StyleRole::CodeNumber,
+            C::Punct => StyleRole::CodePunct,
+        }
+    }
+
     /// 是否数学字族角色(26–40,KaTeX 字体);`MathTeX`(41,行内源哨兵)不算(回退作文本)。
     pub fn is_math_font(self) -> bool {
         let v = self as u32;
@@ -588,22 +640,51 @@ fn emit_block(
         tables.push(region);
         return;
     }
-    // 代码块(Plan 15 ②):每行前置右对齐行号(role CodeLineNum)+ 分隔空格,再发代码字(CodeBlock)。
-    // 行号宽按总行数定(对齐)。行窗(①)随纵滚;横滚固定 gutter(④ 处理 CodeLineNum 不随 scrollX)。
-    if matches!(block.kind, BlockKind::CodeBlock { .. }) {
-        let n = block.lines.len().max(1);
-        let width = n.to_string().len();
-        for (i, line) in block.lines.iter().enumerate() {
+    // 代码块(Plan 15 ② + 语法高亮):每行前置右对齐行号(CodeLineNum)+ 分隔,再发**按 8 色塌缩高亮**
+    // 的代码字(Code*;research 路 A)。行号宽按总行数定。整块一次高亮(跨行字符串/注释正确),逐行按
+    // class 分组成 run。行窗(①)随纵滚;横滚固定 gutter(④)。
+    if let BlockKind::CodeBlock { language } = &block.kind {
+        let lines: Vec<String> = block
+            .lines
+            .iter()
+            .map(jcode_render_core::StyledLine::plain_text)
+            .collect();
+        let full = lines.join("\n");
+        let classes = crate::highlight::highlight(&full, language.as_deref());
+        let class_of = |gi: usize| {
+            StyleRole::from_code_class(
+                classes
+                    .get(gi)
+                    .copied()
+                    .unwrap_or(crate::highlight::CodeClass::Plain),
+            )
+        };
+        let width = lines.len().max(1).to_string().len();
+        let mut gi = 0usize; // `full` 里的全局字符下标(与 classes 对齐)
+        for (i, line) in lines.iter().enumerate() {
             if i > 0 {
                 out.push(StyledSpan::new("\n", StyleRole::Normal));
+                gi += 1; // 跳过 join 的 '\n'
             }
             out.push(StyledSpan::new(
                 format!("{:>width$} ", i + 1),
                 StyleRole::CodeLineNum,
             ));
-            for span in &line.spans {
-                push_text(out, &span.text, StyleRole::CodeBlock, false);
+            let chars: Vec<char> = line.chars().collect();
+            let mut k = 0usize;
+            while k < chars.len() {
+                let role = class_of(gi + k);
+                let mut m = k + 1;
+                while m < chars.len() && class_of(gi + m) == role {
+                    m += 1;
+                }
+                out.push(StyledSpan::new(
+                    chars[k..m].iter().collect::<String>(),
+                    role,
+                ));
+                k = m;
             }
+            gi += chars.len();
         }
         return;
     }
@@ -972,6 +1053,23 @@ mod tests {
         assert_eq!(nums.len(), 12, "12 行 → 12 个行号");
         assert_eq!(nums[0], " 1 ", "首行号右对齐到 2 位");
         assert_eq!(nums[11], "12 ", "末行号 2 位");
+    }
+
+    #[test]
+    fn code_block_syntax_highlight_splits_roles() {
+        // research 路 A:rust 代码块 → fn=关键字、main=函数、u32=类型、42=数字、"s"=字符串、//=注释。
+        let md = "```rust\nfn main() -> u32 {\n    let s = \"hi\"; // c\n    42\n}\n```";
+        let spans = parse_markdown(md);
+        let has = |role: StyleRole| spans.iter().any(|s| s.role() == role);
+        assert!(has(StyleRole::CodeKeyword), "fn/let 关键字");
+        assert!(has(StyleRole::CodeFunc), "main 函数");
+        assert!(has(StyleRole::CodeType), "u32 类型");
+        assert!(has(StyleRole::CodeNumber), "42 数字");
+        assert!(has(StyleRole::CodeString), "\"hi\" 字符串");
+        assert!(has(StyleRole::CodeComment), "// c 注释");
+        // 文本完整(高亮只改色不改字)。
+        let text: String = spans.iter().map(StyledSpan::text).collect();
+        assert!(text.contains("fn main") && text.contains("\"hi\"") && text.contains("42"));
     }
 
     #[test]
@@ -1511,9 +1609,27 @@ $$E = mc^2$$
         assert!(r.contains("Pending"), "待办项应保留");
         assert!(r.contains("Done"), "完成项应保留");
 
-        // Code blocks
-        assert_eq!(role_of(&spans, "fn main() {"), Some(StyleRole::CodeBlock));
-        assert_eq!(role_of(&spans, "fn typed()"), Some(StyleRole::CodeBlock));
+        // Code blocks(语法高亮:整段拆成 Code* 角色 run)
+        assert!(
+            r.contains("fn main") && r.contains("fn typed"),
+            "代码文本保留: {r}"
+        );
+        assert!(
+            spans.iter().any(|s| s.role() == StyleRole::CodeFunc),
+            "函数名高亮(main/typed → CodeFunc)"
+        );
+        assert!(
+            spans.iter().any(|s| s.role() == StyleRole::CodeKeyword),
+            "关键字高亮(rust fn → CodeKeyword)"
+        );
+        assert!(
+            spans.iter().any(|s| s.role() == StyleRole::CodeString),
+            "字符串高亮(\"hello\" → CodeString)"
+        );
+        assert!(
+            spans.iter().any(|s| s.role() == StyleRole::CodeNumber),
+            "数字高亮(42 → CodeNumber)"
+        );
 
         // Table — 0014 B:无 │ 分隔(列由 JS 像素两趟定位);单元格内容在,raw |/│ 不显形
         assert!(

@@ -19,6 +19,7 @@ mod content;
 mod embed;
 mod frame;
 mod fsm;
+mod highlight;
 mod math;
 mod nodes;
 mod protocol;

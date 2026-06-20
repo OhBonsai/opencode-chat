@@ -156,7 +156,6 @@ fn block_decorations(
     panels: &mut Vec<FramePanel>,
     widgets: &mut Vec<FrameWidget>,
 ) {
-    let code = StyleRole::CodeBlock.as_u32();
     let inline = StyleRole::Code.as_u32();
     let quote = StyleRole::Quote.as_u32();
     let alert = StyleRole::AlertLabel.as_u32();
@@ -187,7 +186,7 @@ fn block_decorations(
         let (x0, y0) = (p.pos[0] + origin[0], p.pos[1] + origin[1]);
         let (x1, y1) = (x0 + p.size[0], y0 + p.size[1]);
         let r = cache.roles[j];
-        if r == code {
+        if StyleRole::is_code_text_u32(r) {
             has_code = true;
             cy0 = cy0.min(y0);
             cy1 = cy1.max(y1);
@@ -1304,14 +1303,17 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     continue;
                 }
                 let (mut top_y, mut bot_y, mut line_h) = (f32::MAX, f32::MIN, 0.0f32);
-                // 代码内容起始 x = 首个 CodeBlock 字左缘(行号 gutter 之右);横滚硬裁左界(⑤)。
-                let codecat = StyleRole::CodeBlock.as_u32();
+                // 代码内容起始 x = 首个**代码内容**字左缘(含高亮各角色;行号 gutter 之右)。横裁左界(⑤)。
                 let mut code_x0 = f32::MAX;
                 for (k, p) in placed[s..e].iter().enumerate() {
                     top_y = top_y.min(p.pos[1]);
                     bot_y = bot_y.max(p.pos[1]);
                     line_h = line_h.max(p.size[1]);
-                    if roles.get(s + k).copied() == Some(codecat) && p.size[0] > 0.0 {
+                    let is_code = roles
+                        .get(s + k)
+                        .copied()
+                        .is_some_and(StyleRole::is_code_text_u32);
+                    if is_code && p.size[0] > 0.0 {
                         code_x0 = code_x0.min(p.pos[0]);
                     }
                 }

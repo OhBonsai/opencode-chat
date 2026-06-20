@@ -57,6 +57,14 @@ fn style_color(s: u32) -> vec3<f32> {
         case 24u: { return vec3<f32>(0.45, 0.70, 1.0); }     // FootnoteRef(脚注引用:Link 色小号)
         case 25u: { return vec3<f32>(0.55, 0.58, 0.65); }    // FootnoteDef(脚注定义标记:弱化)
         case 43u: { return vec3<f32>(0.42, 0.46, 0.55); }    // CodeLineNum(代码行号:弱化灰,Plan 15 ②)
+        // 代码语法高亮 8 色塌缩(research 路 A);CodePlain = 复用 case 5(CodeBlock 绿)。
+        case 44u: { return vec3<f32>(0.78, 0.57, 0.92); }    // CodeKeyword(紫)
+        case 45u: { return vec3<f32>(0.40, 0.78, 0.95); }    // CodeType(青)
+        case 46u: { return vec3<f32>(0.45, 0.70, 1.00); }    // CodeFunc(蓝)
+        case 47u: { return vec3<f32>(0.62, 0.84, 0.52); }    // CodeString(绿黄)
+        case 48u: { return vec3<f32>(0.45, 0.50, 0.58); }    // CodeComment(灰)
+        case 49u: { return vec3<f32>(0.94, 0.66, 0.45); }    // CodeNumber(橙)
+        case 50u: { return vec3<f32>(0.78, 0.82, 0.88); }    // CodePunct(浅灰白)
         default: { return vec3<f32>(0.90, 0.90, 0.92); }     // Normal / Rule(零墨)
     }
 }

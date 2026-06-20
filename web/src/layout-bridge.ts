@@ -95,6 +95,13 @@ export function fontForRole(role: number): string {
     case 4: // Code
     case 5: // CodeBlock
     case 43: // CodeLineNum(代码行号:等宽 → 与代码列对齐,Plan 15 ②)
+    case 44: // CodeKeyword(语法高亮 8 色,research 路 A;全等宽保列对齐)
+    case 45: // CodeType
+    case 46: // CodeFunc
+    case 47: // CodeString
+    case 48: // CodeComment
+    case 49: // CodeNumber
+    case 50: // CodePunct
       return `${FONT_SIZE}px ${MONO}`;
     case 6: // Heading (H1)
     case 10: // Heading2..6
