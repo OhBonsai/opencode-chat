@@ -725,6 +725,14 @@ impl ChatCanvas {
         }
     }
 
+    /// 切换 ShaderBox 画廊(Plan 16 `?gallery`):视口钉一格栅,逐格一个内置 shader(50 icon +
+    /// glow_orb + raymarch)→ 一屏肉眼验全盘 shader 上屏(不依赖会话内容)。
+    pub fn set_shaderbox_gallery(&self, on: bool) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.set_shaderbox_gallery(on);
+        }
+    }
+
     /// 设揭示速率上限(glyph/秒,Plan 8C / 0019);≤0 = 不限速(跟内容到达,默认)。
     /// 与 token 解耦的揭示时钟;调慢即限速。web 调试面板"reveal 速度"调。
     pub fn set_reveal_cps(&self, cps: f32) {

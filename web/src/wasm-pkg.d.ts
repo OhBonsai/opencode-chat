@@ -49,6 +49,8 @@ declare module "*infinite_chat_wasm.js" {
     set_paused(paused: boolean): void;
     step(): void;
     set_debug_geometry(on: boolean): void;
+    /** ShaderBox 画廊(Plan 16 `?gallery`):视口格栅逐格一个内置 shader,验全盘上屏。 */
+    set_shaderbox_gallery(on: boolean): void;
     refresh_fonts(): void;
     set_glyph_mode(mode: number): void;
     /** 平移画布(屏幕/设备像素;Plan 6 web 层输入)。dy>0 看更新内容,dx>0 看右侧。 */

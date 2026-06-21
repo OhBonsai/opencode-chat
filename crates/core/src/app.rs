@@ -650,6 +650,9 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     code_hit_rects: Vec<(u64, Rect)>,
     /// ShaderBox 动效节流时钟(Plan 16 护栏4):dynamic box 的 `time` 源,30fps 步进(与主 rAF 解耦)。
     shaderbox_clock: crate::shaderbox::ShaderboxClock,
+    /// ShaderBox 画廊调试开关(Plan 16):开 → build_frame 在视口左上钉一格栅,逐格一个内置
+    /// shader(50 icon + glow_orb + raymarch),供肉眼验全盘上屏。web `?gallery` 触发。
+    shaderbox_gallery: bool,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -680,7 +683,14 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             code_scroll: std::collections::HashMap::new(),
             code_hit_rects: Vec::new(),
             shaderbox_clock: crate::shaderbox::ShaderboxClock::new(),
+            shaderbox_gallery: false,
         }
+    }
+
+    /// 开/关 ShaderBox 画廊调试视图(Plan 16):开后每帧在视口钉一格栅,逐格出一个内置 shader
+    /// (50 icon + glow_orb + raymarch),不依赖任何会话内容 → 肉眼一屏验全盘 shader 上屏。
+    pub fn set_shaderbox_gallery(&mut self, on: bool) {
+        self.shaderbox_gallery = on;
     }
 
     /// 命中某代码块行窗的 world 点 → 该块 key(Plan 15 ④);未命中 None。web 输入层据此路由滚动。
@@ -1869,6 +1879,12 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             });
         }
 
+        // ShaderBox 画廊(Plan 16 调试):视口左上钉一格栅,逐格一个内置 shader → 一屏验全盘上屏。
+        // 屏锚(锚 `visible` 左上 → 随相机平移固定屏上)。50 icon + glow_orb + raymarch。
+        if self.shaderbox_gallery {
+            self.push_shaderbox_gallery(&visible, &mut shaderboxes, &mut shaderbox_pixels);
+        }
+
         self.last_stats = FrameStats {
             frame_glyphs: glyphs.len(),
             total_glyphs,
@@ -1889,6 +1905,63 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             cam_pan: self.camera.pan(),
             cam_zoom: self.camera.zoom(),
         }
+    }
+
+    /// ShaderBox 画廊格栅(Plan 16 调试,`set_shaderbox_gallery(true)`)。在 `visible` 视口左上铺
+    /// 一格栅:50 个 icon(`ShaderId::Icons`,`params[0]`=icon_id)+ glow_orb + raymarch 各一格,
+    /// 屏锚(锚视口左上 → 内容滚动时格栅固定屏上)。每格计入 shaderbox 度量。GPU 上屏验全盘 shader。
+    fn push_shaderbox_gallery(
+        &self,
+        visible: &Rect,
+        shaderboxes: &mut Vec<crate::FrameShaderBox>,
+        shaderbox_pixels: &mut u64,
+    ) {
+        const TILE: f32 = 40.0;
+        const GAP: f32 = 8.0;
+        const MARGIN: f32 = 16.0;
+        let pitch = TILE + GAP;
+        let cols = (((visible.w - 2.0 * MARGIN) / pitch).floor() as usize).max(1);
+        let t = self.shaderbox_clock.time_s();
+        // 50 个 icon(id 0..=49)+ glow_orb + raymarch;按行列铺格。
+        let mut emit = |k: usize, shader_id: u32, params: [f32; 8], dynamic: bool| {
+            let (col, row) = (k % cols, k / cols);
+            let pos = [
+                visible.x + MARGIN + col as f32 * pitch,
+                visible.y + MARGIN + row as f32 * pitch,
+            ];
+            let rect = Rect::new(pos[0], pos[1], TILE, TILE);
+            if !rect.intersects(visible) {
+                return; // 护栏1:滚出视口的格不发
+            }
+            shaderboxes.push(crate::FrameShaderBox {
+                pos,
+                size: [TILE, TILE],
+                shader_id,
+                params,
+                bg: [0.09, 0.09, 0.12, 1.0], // 暗底 → icon 覆盖率清晰可辨
+                time: if dynamic { t } else { 0.0 }, // 护栏2:静态 icon 冻
+                dynamic,
+                channel0: 0,
+            });
+            *shaderbox_pixels += rect.overlap_area(visible).round().max(0.0) as u64;
+        };
+        for icon in 0u32..50 {
+            let mut params = [0.0f32; 8];
+            params[0] = icon as f32; // p0.x = icon_id(无 morph:p0.z=0)
+            let dynamic = !matches!(icon, 0 | 15 | 18 | 48); // 4 个静态(护栏2)
+            emit(
+                icon as usize,
+                crate::ShaderId::Icons.as_u32(),
+                params,
+                dynamic,
+            );
+        }
+        // glow_orb(默认蓝环,常态脉冲)。
+        let mut orb = [0.0f32; 8];
+        orb[3] = 1.0; // p0.w = 脉冲速度
+        emit(50, crate::ShaderId::GlowOrb.as_u32(), orb, true);
+        // raymarch(留位 3D SDF)。
+        emit(51, crate::ShaderId::Raymarch.as_u32(), [0.0f32; 8], true);
     }
 
     /// 取或建某 part 的视图(保持 store 顺序)。
@@ -3150,6 +3223,53 @@ mod tests {
         assert!(
             eng.sink().last().expect("frame").shaderboxes.is_empty(),
             "离屏不发 ShaderBox"
+        );
+    }
+
+    #[test]
+    fn shaderbox_gallery_emits_all_builtin_shaders() {
+        // Plan 16 调试:开 gallery → 视口出 50 icon + glow_orb + raymarch 各一格(不依赖内容)。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            200.0,
+            800.0,
+        );
+        eng.set_shaderbox_gallery(true);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        // 52 格全发(空会话也出 → 屏锚视口,与内容解耦)。
+        assert_eq!(f.shaderboxes.len(), 52, "50 icon + glow_orb + raymarch");
+        let icons = f
+            .shaderboxes
+            .iter()
+            .filter(|sb| sb.shader_id == crate::ShaderId::Icons.as_u32())
+            .count();
+        assert_eq!(icons, 50, "整盘 50 个 icon");
+        // 4 个静态 icon(Void/TheTemple/TheHermit/Enlightenment)time 冻为 0。
+        let statics = f
+            .shaderboxes
+            .iter()
+            .filter(|sb| sb.shader_id == crate::ShaderId::Icons.as_u32() && !sb.dynamic)
+            .count();
+        assert_eq!(statics, 4, "4 个静态 icon 冻");
+        assert!(
+            f.shaderboxes
+                .iter()
+                .any(|sb| sb.shader_id == crate::ShaderId::GlowOrb.as_u32()),
+            "含 glow_orb 格"
+        );
+        assert!(
+            f.shaderboxes
+                .iter()
+                .any(|sb| sb.shader_id == crate::ShaderId::Raymarch.as_u32()),
+            "含 raymarch 格"
+        );
+        assert_eq!(
+            eng.frame_stats().shaderbox_active,
+            52,
+            "度量计全部 gallery 格"
         );
     }
 

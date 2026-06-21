@@ -121,6 +121,15 @@ async function main() {
       if (++tries > 20) clearInterval(id);
     }, 200);
   }
+  // ?gallery:ShaderBox 画廊(Plan 16)— 视口钉一格栅,逐格一个内置 shader(50 icon +
+  // glow_orb + raymarch),一屏肉眼验全盘 shader 上屏。引擎异步就绪 → 同 verify 轮询几次。
+  if (params.has("gallery")) {
+    let tries = 0;
+    const id = setInterval(() => {
+      chat.set_shaderbox_gallery(true);
+      if (++tries > 20) clearInterval(id);
+    }, 200);
+  }
   console.info("[harness] ChatCanvas started", {
     mode: serverUrl ? `live: ${serverUrl}` : "synthetic demo",
   });
