@@ -52,14 +52,8 @@ jobs:
           node scripts/gen-showcase.mjs
           node scripts/gen-gallery.mjs
 
-      # ---- 烘 ASCII 英文 MSDF(runner glibc 够新,能跑 msdfgen)----
-      # LaTeX(katex-msdf)已随库入库;CJK lxgw 体积大不烘。失败不拖垮部署(回退 TinySDF)。
-      # 若已在仓库提交 ascii-msdf.*,这步会用新鲜烘的覆盖 dist 里的(等价)。
-      - name: Bake ASCII MSDF (best-effort)
-        continue-on-error: true
-        run: |
-          npm i -g msdf-bmfont-xml
-          npm run bake:ascii --prefix web
+      # 注:ASCII(ascii-msdf)与 LaTeX(katex-msdf)小 MSDF 烘集已随库入库,直接用,CI 不再烘。
+      # 大 CJK(lxgw-msdf)如需上线再单独加烘步(runner glibc 够新)。
 
       # ---- 构建(wasm-pack + vite)----
       # PAGES_BASE = /<repo>/ → vite base + 运行时 fetch 前缀(项目页子路径)。

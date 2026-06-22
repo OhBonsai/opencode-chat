@@ -160,7 +160,7 @@ function mountDemoBar() {
     `<span style="opacity:.6">live engine demo · replaying offline</span>` +
     `<span style="flex:1"></span>` +
     link("🎨 Icon Gallery", `${base}gallery.html`) +
-    link("▶ Replay", `?replay=g-md-all`) +
+    link("▶ 慢放重看", `?replay=showcase&speed=0.5`) +
     link("GitHub", "https://github.com/OhBonsai/infinite-chat");
   document.body.appendChild(bar);
 }
