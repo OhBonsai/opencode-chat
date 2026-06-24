@@ -8,9 +8,11 @@
     "build": "npm run build:wasm && vite build",
     "bake:ascii": "node ../scripts/bake-msdf.mjs --ascii --name ascii-msdf --size 48 --texture 512,512 --font lxgw-wenkai-v1.522/LXGWWenKai-Regular.ttf",
     "gen:longsession": "node ../scripts/gen-longsession.mjs --lines 10000 --turns 200",
+    "bench": "playwright test bench.spec.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "pngjs": "^7.0.0",
     "typescript": "^5",
     "vite": "^5",

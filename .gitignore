@@ -34,6 +34,12 @@ node_modules/
 web/dist/
 web/.vite/
 *.tsbuildinfo
+
+# ───────────── Playwright(Plan 18 ?bench 采集)─────────────
+web/test-results/
+web/playwright-report/
+web/.playwright/
+# 注:web/bench-results/*.csv(基线快照)与 web/public/replays/longsession-*.json(合成 case)入库作回归基线。
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
