@@ -9,7 +9,10 @@ export default defineConfig({
   testDir: "./tests",
   timeout: 120_000, // 长会话载入 ~15s + 采样
   fullyParallel: false,
-  reporter: [["list"]],
+  // 串行单 worker:剪贴板是**全局单例**(E1/E4/E8 并行会互踩)、WebGPU/视觉帧需确定 → 强制 1 worker。
+  workers: 1,
+  // Plan 20/21 §3.5:机器可读输出 → verify/CI 可聚合。list 给人看,junit 给机器。
+  reporter: [["list"], ["junit", { outputFile: "test-results/junit.xml" }]],
   use: {
     baseURL: "http://localhost:5173",
     headless: true,

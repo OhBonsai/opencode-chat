@@ -70,6 +70,8 @@ struct StatsSnapshot {
     tier_hot: usize,
     tier_warm: usize,
     rebuilds: usize,
+    /// Plan 21 P2:本帧选区高亮 FrameRect 数(E2E 验选区已上屏)。
+    selection_rects: usize,
     atlas_used: usize,
     atlas_cap: usize,
     atlas_evict: u64,
@@ -567,6 +569,7 @@ impl ChatCanvas {
         set("tierHot", s.tier_hot as f64);
         set("tierWarm", s.tier_warm as f64);
         set("rebuilds", s.rebuilds as f64);
+        set("selRects", s.selection_rects as f64);
         set("atlasUsed", s.atlas_used as f64);
         set("atlasCap", s.atlas_cap as f64);
         set("atlasEvict", s.atlas_evict as f64);
@@ -696,6 +699,100 @@ impl ChatCanvas {
             })
             .collect();
         format!("[{}]", items.join(","))
+    }
+
+    /// 可见消息的复制数据(Plan 21 P1):JSON `[{id,turn,role,x,y,w,h,text}]`,坐标 = 设备像素
+    /// 屏幕坐标(world→screen 经相机 pan/zoom,同 `frame_embeds`)。`copy-button` 据此每帧在每条
+    /// 可见消息右上摆"复制"按钮;`text` = 该消息渲染后纯文本。仅可见块 → 数量 ∝ 可见(虚拟化)。
+    pub fn visible_turns(&self) -> String {
+        let guard = self.state.borrow();
+        let Some(app) = guard.as_ref() else {
+            return "[]".to_string();
+        };
+        let cam = app.engine.camera();
+        let pan = cam.pan();
+        let zoom = cam.zoom();
+        let items: Vec<String> = app
+            .engine
+            .visible_messages()
+            .iter()
+            .map(|m| {
+                let x = (m.origin[0] - pan[0]) * zoom;
+                let y = (m.origin[1] - pan[1]) * zoom;
+                let w = m.width * zoom;
+                let h = m.height * zoom;
+                let role = if m.user { "user" } else { "assistant" };
+                format!(
+                    r#"{{"id":{},"turn":{},"role":"{role}","x":{x},"y":{y},"w":{w},"h":{h},"text":{:?}}}"#,
+                    m.id, m.turn, m.text
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
+    /// 可见文本 run(Plan 21 P2):JSON `[{block,char0,x,y,w,h,text}]`,坐标 = 设备像素屏幕坐标。
+    /// `text-layer` 据此建虚拟透明文本层(原生选区/Cmd+F);仅可见块 → DOM ∝ 可见(0030 §7.1)。
+    pub fn visible_text_runs(&self) -> String {
+        let guard = self.state.borrow();
+        let Some(app) = guard.as_ref() else {
+            return "[]".to_string();
+        };
+        let cam = app.engine.camera();
+        let pan = cam.pan();
+        let zoom = cam.zoom();
+        let items: Vec<String> = app
+            .engine
+            .visible_text_runs()
+            .iter()
+            .map(|r| {
+                let x = (r.origin[0] - pan[0]) * zoom;
+                let y = (r.origin[1] - pan[1]) * zoom;
+                let w = r.width * zoom;
+                let h = r.height * zoom;
+                format!(
+                    r#"{{"block":{},"char0":{},"x":{x},"y":{y},"w":{w},"h":{h},"text":{:?}}}"#,
+                    r.block, r.char0, r.text
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
+    /// 设选区(Plan 21 P2):`flat` = 扁平三元组 `[block,start,end, block,start,end, ...]`(u32;end 不含,
+    /// 块内显示字形序)。host 把 DOM 选区映成此灌入 → 下帧据此发选区高亮(glyph 前)。空数组 = 清选区。
+    /// presentation 输入(同相机 pan):不进 reveal、不入录像(0030 §7.6 / R8)。
+    pub fn set_selection(&self, flat: &[u32]) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            let ranges = flat
+                .chunks_exact(3)
+                .map(|c| (c[0] as usize, c[1] as usize, c[2] as usize))
+                .collect();
+            app.engine.set_selection(ranges);
+        }
+    }
+
+    /// 跨全历史全文查找(Plan 21 P3):JSON `[{view,char}]`(view 下标 + 源文本 char 偏移)。
+    /// 含屏外/Warm 块 → 解决"虚拟化致原生 Cmd+F 只覆盖可见"(0030 §7.7)。
+    pub fn find(&self, query: &str) -> String {
+        let guard = self.state.borrow();
+        let Some(app) = guard.as_ref() else {
+            return "[]".to_string();
+        };
+        let items: Vec<String> = app
+            .engine
+            .find(query)
+            .iter()
+            .map(|(v, c)| format!(r#"{{"view":{v},"char":{c}}}"#))
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
+    /// 跳到某 view(Plan 21 P3:Cmd+F 命中后):相机平移到该块顶(脱离锚底);下帧 promote 回 Hot。
+    pub fn scroll_to(&self, view: u32) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.scroll_to(view as usize);
+        }
     }
 
     /// 设表格面板渲染样式(web 层 style 面板实时调;Plan 6 / 0018)。**无需重排/reload**:
@@ -1033,6 +1130,7 @@ async fn init_and_run(
                     tier_hot: st.tier_counts[0],
                     tier_warm: st.tier_counts[1],
                     rebuilds: st.rebuilds_this_frame,
+                    selection_rects: st.selection_rects,
                     atlas_used: used,
                     atlas_cap: cap,
                     atlas_evict: evict,

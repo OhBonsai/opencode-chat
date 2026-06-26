@@ -35,6 +35,10 @@ pub(crate) const TABLE_HEADER_BG: [f32; 4] = [0.16, 0.18, 0.24, 0.6];
 /// 表格分隔线(表头底线 / 表尾外边线)。
 pub(crate) const TABLE_RULE: [f32; 4] = [0.26, 0.29, 0.36, 0.9];
 
+/// 文本选区高亮(Plan 21 P2 / 0030):画在文字**之下**(rect pass 先于 glyph)→ 文字永全不透明在上,
+/// 任意多色(代码/链接/标题)不被洗淡。半透明蓝,暗底可辨;DOM `::selection` 透明,高亮独此一份。
+pub(crate) const SELECTION: [f32; 4] = [0.26, 0.45, 0.92, 0.40];
+
 /// 调试:块 AABB 描边。
 pub(crate) const DBG_BLOCK: [f32; 4] = [0.40, 0.90, 0.50, 0.7];
 /// 调试:视口框描边。

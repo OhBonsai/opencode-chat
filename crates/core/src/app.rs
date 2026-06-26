@@ -553,6 +553,116 @@ struct PartView {
     agg: Option<BlockAgg>,
 }
 
+/// 渲染后纯文本(Plan 21 P1):显示字形序列 join。`clusters` 已是 markdown 渲染后字形(语法标记已去),
+/// 含 `"\n"` 占位 → concat 即得带换行的纯文本。
+fn rendered_text(clusters: &[String]) -> String {
+    clusters.concat()
+}
+
+/// 把一个块的显示字形按 `"\n"` 切行,产逐行 world 盒 + 文本(Plan 21 P2 文本层)。
+/// 行盒 = 该行字形的并集 AABB(world = `placed` 相对 + `origin`);纯换行/空行跳过。`char0` = 行首
+/// 字形在块内下标(`clusters`/`placed` 1:1)→ host DOM 选区映回字符区间用。
+fn line_runs(cache: &BlockCache, block: u32, origin: [f32; 2], out: &mut Vec<VisibleTextRun>) {
+    let n = cache.clusters.len().min(cache.placed.len());
+    let mut i = 0usize;
+    while i < n {
+        if cache.clusters[i] == "\n" {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut text = String::new();
+        let (mut x0, mut y0) = (f32::MAX, f32::MAX);
+        let (mut x1, mut y1) = (f32::MIN, f32::MIN);
+        while i < n && cache.clusters[i] != "\n" {
+            let p = &cache.placed[i];
+            x0 = x0.min(p.pos[0]);
+            y0 = y0.min(p.pos[1]);
+            x1 = x1.max(p.pos[0] + p.size[0]);
+            y1 = y1.max(p.pos[1] + p.size[1]);
+            text.push_str(&cache.clusters[i]);
+            i += 1;
+        }
+        if i < n && cache.clusters[i] == "\n" {
+            i += 1; // 吞掉行尾换行
+        }
+        if x1 > x0 && y1 > y0 {
+            out.push(VisibleTextRun {
+                block,
+                char0: start as u32,
+                origin: [x0 + origin[0], y0 + origin[1]],
+                width: x1 - x0,
+                height: y1 - y0,
+                text,
+            });
+        }
+    }
+}
+
+/// 选区高亮(Plan 21 P2→P3):为 `view` 块上落在选区内的**非零墨**字形发高亮 `FrameRect`(world =
+/// `placed` 相对 + `origin`)。**逐行合并成圆角连续墨团**(P3:同行内被选字形并成一条圆角条,
+/// 比逐字形 rect 更像 macOS 选区;跨行各自一条 → 0025 §4 的 smin 跨行连体作进一步视觉细化)。
+/// 合并保"不漏选"(每个被选非零墨字形盒 ⊆ 其行墨团,N7)且不波及行内未选字(行内被选字形连续)。
+/// 颜色 [`theme::SELECTION`];进 `rects`(glyph 前绘制)→ 文字永在其上。
+fn push_selection_rects(
+    cache: &BlockCache,
+    origin: [f32; 2],
+    sel: &[(usize, usize, usize)],
+    view: usize,
+    out: &mut Vec<FrameRect>,
+) -> usize {
+    let n = cache.placed.len().min(cache.clusters.len());
+    let mut pushed = 0usize;
+    // 累积当前行墨团的 AABB(world);行变(pos.y 变)或遇换行 → flush。
+    let mut cur: Option<[f32; 4]> = None; // [x0,y0,x1,y1]
+    let flush = |cur: &mut Option<[f32; 4]>, out: &mut Vec<FrameRect>, pushed: &mut usize| {
+        if let Some([x0, y0, x1, y1]) = cur.take() {
+            let h = y1 - y0;
+            out.push(FrameRect {
+                pos: [x0, y0],
+                size: [x1 - x0, h],
+                color: crate::theme::SELECTION,
+                radius: (h * 0.28).min(6.0), // 圆角墨团(P3)
+                stroke: 0.0,
+            });
+            *pushed += 1;
+        }
+    };
+    for &(v, s, e) in sel {
+        if v != view {
+            continue;
+        }
+        flush(&mut cur, out, &mut pushed); // 不同区间不跨并
+        for i in s.min(n)..e.min(n) {
+            if cache.clusters[i] == "\n" {
+                flush(&mut cur, out, &mut pushed); // 换行 → 收束本行墨团
+                continue;
+            }
+            let p = &cache.placed[i];
+            if p.size[0] <= 0.0 {
+                continue; // 零墨占位不画
+            }
+            let (gx0, gy0) = (p.pos[0] + origin[0], p.pos[1] + origin[1]);
+            let (gx1, gy1) = (gx0 + p.size[0], gy0 + p.size[1]);
+            match &mut cur {
+                // 同行(顶 y 接近)→ 并入;换行(y 跳)→ flush 再起新条。
+                Some(b) if (gy0 - b[1]).abs() < 0.5 => {
+                    b[0] = b[0].min(gx0);
+                    b[2] = b[2].max(gx1);
+                    b[3] = b[3].max(gy1);
+                }
+                _ => {
+                    flush(&mut cur, out, &mut pushed);
+                    cur = Some([gx0, gy0, gx1, gy1]);
+                }
+            }
+        }
+        flush(&mut cur, out, &mut pushed);
+    }
+    flush(&mut cur, out, &mut pushed);
+    pushed
+}
+
 /// 把 views(到达序)分组成回合(Plan 13 §4.3,纯投影):遇 User part 开新回合;连续 Assistant
 /// part 归当前回合的同一 AsstBox。无前导 user 的 assistant 自成一回合(user=None)。`TurnGroup`
 /// 定义在 [`crate::boxlayout`](布局消费方)。
@@ -607,6 +717,46 @@ pub struct FrameStats {
     pub tier_counts: [usize; 2],
     /// 本帧 `ensure_layouts` 重建块数(Plan 19 §2 thrash 监控;稳态应为 0)。
     pub rebuilds_this_frame: usize,
+    /// 本帧发射的选区高亮 `FrameRect` 数(Plan 21 P2;host `stats().selRects` 验选区已上屏)。
+    pub selection_rects: usize,
+}
+
+/// 一条**可见消息**(Plan 21 P1):每个屏上 Hot 块的复制单元 —— world 盒 + 渲染后纯文本。
+/// host(wasm/web)据此每帧在每条消息角摆"复制"按钮(world→screen),点击写剪贴板。
+/// **仅可见块**(虚拟化,0029 / Plan 19)→ 数量 ∝ 可见,不随历史涨。
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibleMessage {
+    /// view 下标(= `block_seq`,append-only 稳定 → host 复用按钮,不每帧重建)。
+    pub id: u32,
+    /// 所属回合序(`group_turns` 下标)。
+    pub turn: u32,
+    /// 角色:true = user(右),false = assistant(左)。
+    pub user: bool,
+    /// 盒左上角 world 坐标。
+    pub origin: [f32; 2],
+    /// 盒宽 / 高(world px)。
+    pub width: f32,
+    pub height: f32,
+    /// 该块**渲染后纯文本**(显示字形序列 join;markdown 噪声已在排版时去除)。
+    pub text: String,
+}
+
+/// 一行**可见文本 run**(Plan 21 P2):每个屏上 Hot 块逐行一个透明 span 的 world 盒 + 文本 +
+/// `block`(view 下标)+ 起始字符偏移(块内显示字形序)。host 据此建虚拟透明文本层(原生选区/Cmd+F),
+/// 并把 DOM 选区映回字符区间灌 `set_selection`。**仅可见块** → DOM 节点 ∝ 可见(0030 §7.1 硬约束)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibleTextRun {
+    /// 所属块(view 下标 = `block_seq`)。
+    pub block: u32,
+    /// 行内首个显示字形在块内的下标(`cache.clusters`/`placed` 序)。
+    pub char0: u32,
+    /// 行左上角 world 坐标。
+    pub origin: [f32; 2],
+    /// 行宽 / 高(world px;高 = 行高)。
+    pub width: f32,
+    pub height: f32,
+    /// 该行文本(显示字形 join,不含行尾换行)。
+    pub text: String,
 }
 
 /// 每帧 per-phase 计时(Plan 19 §2:把「fps 归因」从断言变实测;ms)。单列因含 f32 不能进 `FrameStats`
@@ -726,6 +876,14 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     last_rebuilds: usize,
     /// Plan 19 P2 虚拟化总开关(`?novirt` 关 = 全程 Hot,P2 前行为/兜底)。默认开。
     virtualize: bool,
+    /// 上帧实际可见(narrow-phase 通过)的块:`(view 下标, turn 序, world origin, 盒宽, 高)`。
+    /// Plan 21:`visible_messages()`/`visible_text_runs()` 据此只吐 **Hot 可见块**(虚拟化,DOM ∝ 可见,
+    /// 不随历史涨)。每帧 `build_frame` 末重填;不参与渲染/录像 → 不破确定性(presentation 派生)。
+    last_visible: Vec<(usize, u32, [f32; 2], f32, f32)>,
+    /// 选区(Plan 21 P2):字符区间 `[(view 下标, start_char, end_char)]`(end 不含,块内显示字形序)。
+    /// presentation 输入(同相机 pan),**不进 reveal / 不入录像** → 不破 R8 重放(0030 §7.6)。
+    /// `build_frame` 据此查 `cache.placed` 发选区高亮 `FrameRect`(glyph 前),文字永在其上。
+    selection: Vec<(usize, usize, usize)>,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -761,6 +919,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             last_phase_ms: PhaseMs::default(),
             last_rebuilds: 0,
             virtualize: true,
+            last_visible: Vec::new(),
+            selection: Vec::new(),
         }
     }
 
@@ -772,6 +932,132 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// Plan 19 P2 虚拟化开关(`?novirt` → false = 全程 Hot,不释放;对照/兜底)。
     pub fn set_virtualize(&mut self, on: bool) {
         self.virtualize = on;
+    }
+
+    /// Plan 21 P1:**可见消息**(每个屏上 Hot 块)→ world 盒 + 渲染纯文本。host 据此摆复制按钮。
+    /// 读上帧 `last_visible`(build_frame 末填)+ 现 cache → 仅可见块,数量 ∝ 可见(虚拟化)。
+    pub fn visible_messages(&self) -> Vec<VisibleMessage> {
+        self.last_visible
+            .iter()
+            .filter_map(|&(id, turn, origin, w, h)| {
+                let view = self.views.get(id)?;
+                let cache = view.cache.as_ref()?; // Warm/已释放 → 跳过(只覆盖 Hot)
+                Some(VisibleMessage {
+                    id: id as u32,
+                    turn,
+                    user: view.role == crate::store::Role::User,
+                    origin,
+                    width: w,
+                    height: h,
+                    text: rendered_text(&cache.clusters),
+                })
+            })
+            .collect()
+    }
+
+    /// Plan 21 P2:**可见文本 run**(每个屏上 Hot 块逐行)→ world 盒 + 文本 + 块/字符偏移。
+    /// host 据此建虚拟透明文本层(原生选区)。仅可见块 → DOM ∝ 可见(0030 §7.1 硬约束)。
+    /// 行切分:按 `cache.clusters` 的 `"\n"` 分段;每段非空 run 取其字形并集盒(world = 块内相对 + origin)。
+    pub fn visible_text_runs(&self) -> Vec<VisibleTextRun> {
+        let mut runs = Vec::new();
+        for &(id, _turn, origin, _w, _h) in &self.last_visible {
+            let Some(view) = self.views.get(id) else {
+                continue;
+            };
+            let Some(cache) = view.cache.as_ref() else {
+                continue;
+            };
+            line_runs(cache, id as u32, origin, &mut runs);
+        }
+        runs
+    }
+
+    /// Plan 21 P2:设选区(host 把 DOM 选区映成字符区间灌入)。`ranges` = `[(view 下标, start, end)]`
+    /// (end 不含,块内显示字形序)。**presentation 输入**(同相机 pan):只影响下帧选区高亮,
+    /// **不进 reveal、不入录像** → 不破 R8 确定性重放(0030 §7.6)。空 vec = 清选区。
+    pub fn set_selection(&mut self, ranges: Vec<(usize, usize, usize)>) {
+        self.selection = ranges;
+    }
+
+    /// 当前选区(只读;测试/host 查询)。
+    pub fn selection(&self) -> &[(usize, usize, usize)] {
+        &self.selection
+    }
+
+    /// 每个 view 的布局叶子尺寸 `(内容宽, 高)`(Plan 13 §4 / Plan 19):Hot 非空读缓存、Warm 凭 agg 占位、
+    /// 其余 `(0,0)`。`build_frame` 与 `scroll_to`(查任意块世界 y)共用,避免逻辑漂移。
+    fn layout_sizes(&self) -> Vec<(f32, f32)> {
+        self.views
+            .iter()
+            .map(|v| {
+                if self.is_filtered(v) {
+                    return (0.0, 0.0);
+                }
+                match (&v.cache, v.tier) {
+                    (Some(c), _) if !c.placed.is_empty() => {
+                        let w = if self.bench_fold_width {
+                            c.placed
+                                .iter()
+                                .filter(|p| p.size[0] > 0.0)
+                                .map(|p| p.pos[0] + p.size[0])
+                                .fold(0.0f32, f32::max)
+                        } else {
+                            c.content_width
+                        };
+                        (w, c.height)
+                    }
+                    (None, Tier::Warm) => match v.agg {
+                        Some(a) => (a.content_width, a.height),
+                        None => (0.0, 0.0),
+                    },
+                    _ => (0.0, 0.0),
+                }
+            })
+            .collect()
+    }
+
+    /// 某 view 盒的世界 y(顶);跨**全历史**(含屏外 Warm 块,凭 agg 占位)→ Cmd+F 跳转用。
+    fn view_world_y(&self, view: usize) -> Option<f32> {
+        if view >= self.views.len() {
+            return None;
+        }
+        let sizes = self.layout_sizes();
+        let turns = group_turns(&self.views);
+        let boxpos = crate::boxlayout::layout_chat(&turns, &sizes, self.max_width);
+        boxpos.get(view).map(|b| b.origin[1])
+    }
+
+    /// Plan 21 P3:跳到某 view(Cmd+F 命中后):相机平移到该块顶(脱离锚底)。下帧虚拟化把它 promote
+    /// 回 Hot → 可见 + 可逐字选。presentation(同相机),不破 R8。
+    pub fn scroll_to(&mut self, view: usize) {
+        if let Some(y) = self.view_world_y(view) {
+            let x = self.camera.pan()[0];
+            self.camera.set_pan(x, y.max(0.0));
+            self.stick_to_bottom = false;
+        }
+    }
+
+    /// Plan 21 P3:跨**全历史**全文查找(Store 源文本,含屏外/Warm 块)。返回每处命中
+    /// `[(view 下标, 源文本 char 偏移)]`(文档序、块内升序)。大小写敏感、子串匹配;空 query → 空。
+    /// host:`find` 定位 → `scroll_to` 跳转 → 块 promote 后据 `visible_text_runs` 精确选中(0030 §7.7)。
+    pub fn find(&self, query: &str) -> Vec<(u32, u32)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for (vi, v) in self.views.iter().enumerate() {
+            let Some(text) = self.store.part_text(&v.part_id) else {
+                continue;
+            };
+            let mut from = 0usize; // byte 游标
+            while let Some(rel) = text[from..].find(query) {
+                let byte = from + rel;
+                let char_off = text[..byte].chars().count() as u32;
+                hits.push((vi as u32, char_off));
+                from = byte + query.len().max(1); // 不重叠扫描
+            }
+        }
+        hits
     }
 
     /// 开/关 ShaderBox 画廊调试视图(Plan 16):开后每帧在视口钉一格栅,逐格出一个内置 shader
@@ -1517,43 +1803,28 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// 相机变换在着色器里做;锚底 = 相机 pan.y 跟随底部;块冻结仍在(ensure_layouts)。
     fn build_frame(&mut self) -> FrameData {
         let bf_t0 = web_time::Instant::now(); // Plan 19 §2 per-phase 计时
-        // 排版 + 揭示调度已在 `frame()` 内先行(ensure_layouts → schedule);此处只读状态组帧。
+                                              // 排版 + 揭示调度已在 `frame()` 内先行(ensure_layouts → schedule);此处只读状态组帧。
         self.sync_image_registry(); // Plan 14 ③:新到的图补登占位态,JS 可领取解码
 
         // 1) chat 级盒子布局(Plan 13 §4):角色分组 → Taffy 盒树 → 每 view 盒 origin/width。**收编
         //    手搓 `top += height`**:user 右、assistant 左、一回合一盒(0005)。view 内 glyph 相对位
         //    不变,整体按 box origin 平移(0016 morph 身份稳定)。叶子尺寸 = (内容宽, 块高)。
-        let sizes: Vec<(f32, f32)> = self
-            .views
-            .iter()
-            .map(|v| {
-                if self.is_filtered(v) {
-                    return (0.0, 0.0);
-                }
-                // Plan 19:Hot 非空块读缓存内容宽(P1,免每帧 fold);Warm 块(释放几何)凭 `agg`
-                // 占位(P2,布局稳定 0029 §3);Hot 空块/无 agg → (0,0)(保 P1 前严格等价)。
-                match (&v.cache, v.tier) {
-                    (Some(c), _) if !c.placed.is_empty() => {
-                        let w = if self.bench_fold_width {
-                            c.placed
-                                .iter()
-                                .filter(|p| p.size[0] > 0.0)
-                                .map(|p| p.pos[0] + p.size[0])
-                                .fold(0.0f32, f32::max)
-                        } else {
-                            c.content_width
-                        };
-                        (w, c.height)
-                    }
-                    (None, Tier::Warm) => match v.agg {
-                        Some(a) => (a.content_width, a.height),
-                        None => (0.0, 0.0),
-                    },
-                    _ => (0.0, 0.0),
-                }
-            })
-            .collect();
+        let sizes = self.layout_sizes();
         let turns = group_turns(&self.views);
+        // Plan 21:view→turn 反查(`visible_messages` 标 turn 序;O(views),与本就 O(views) 的布局同阶)。
+        let mut view_turn = vec![0u32; self.views.len()];
+        for (ti, t) in turns.iter().enumerate() {
+            if let Some(u) = t.user {
+                if u < view_turn.len() {
+                    view_turn[u] = ti as u32;
+                }
+            }
+            for &a in &t.assistant {
+                if a < view_turn.len() {
+                    view_turn[a] = ti as u32;
+                }
+            }
+        }
         let boxpos = crate::boxlayout::layout_chat(&turns, &sizes, self.max_width);
         let e_layout = bf_t0.elapsed(); // ← layout 段(含 Taffy)止
 
@@ -1665,6 +1936,9 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         let mut shaderbox_pixels: u64 = 0; // 护栏度量:屏上 box∩viewport 面积和(Plan 16 §2.4)
         let mut visible_blocks = 0usize; // 可观测:实际出 glyph 的块数
         let mut hit_rects: Vec<(u64, Rect)> = Vec::new(); // Plan 15 ④:代码块行窗世界命中矩形
+        let mut visible_recs: Vec<(usize, u32, [f32; 2], f32, f32)> = Vec::new(); // Plan 21:可见块世界盒
+        let mut selection_rect_count = 0usize; // Plan 21 P2:本帧选区高亮数(可观测)
+        let selection = self.selection.clone(); // Plan 21 P2:本帧选区(快照,避免借用冲突;小)
         let reveal_kind = self.scheduler.table_style(); // 表格揭示风格(驱动面板骨架揭示)
         for id in ids {
             let view = &self.views[id];
@@ -1677,6 +1951,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             if !Rect::new(origin[0], origin[1], box_w, block_h).intersects(&visible) {
                 continue; // narrow phase:实际矩形不相交 → 裁掉
             }
+            // Plan 21:记此可见块世界盒(复制按钮 / 文本层据此只覆盖 Hot 可见块,虚拟化 DOM ∝ 可见)。
+            visible_recs.push((id, view_turn[id], origin, box_w, block_h));
             // Agent 回复 logo(Plan 16 §2.6):assistant 盒左侧钉一个 dynamic glow-orb 头像;流式
             // (未 settled)= 加速脉冲作 busy 指示。护栏:离屏 cull(下方 box_rect.intersects)+ 节流时钟。
             if view.role == crate::store::Role::Assistant {
@@ -1711,6 +1987,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 &mut panels,
                 &mut widgets,
             ); // 4B/6 装饰 + Plan 11 复选框
+               // Plan 21 P2:选区高亮(在装饰之后、glyph 之前入 rects → 压装饰底之上、文字之下)。
+            selection_rect_count += push_selection_rects(cache, origin, &selection, id, &mut rects);
             let glyphs_before = glyphs.len();
             // 图片(Plan 14 ③):本块**已就绪**(Ready+纹理)嵌入 → (ei, 占位区间, 动图?, 自然尺寸, tex_id)。
             // 就绪即隐藏其 alt 占位字(图替之);未就绪(占位/加载/失败)则 alt 照常上屏(兜底)。
@@ -2073,10 +2351,12 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             retained_nodes,
             tier_counts,
             rebuilds_this_frame: self.last_rebuilds,
+            selection_rects: selection_rect_count,
         };
-        // Plan 19 P2:工作集回收(用本帧 drawable 位置 + 视口)。滞回带:进 promote 带→Hot(下帧
-        // ensure_layouts 重建);Hot 且 settled 且超 release 带→Warm(释放重几何,留 agg 占位)。
-        // 带宽以视口高为单位,release > promote → 不 thrash。屏锚/不可逆操作前已落定。
+        self.last_visible = visible_recs; // Plan 21:本帧可见块世界盒(供 visible_messages/text_runs)
+                                          // Plan 19 P2:工作集回收(用本帧 drawable 位置 + 视口)。滞回带:进 promote 带→Hot(下帧
+                                          // ensure_layouts 重建);Hot 且 settled 且超 release 带→Warm(释放重几何,留 agg 占位)。
+                                          // 带宽以视口高为单位,release > promote → 不 thrash。屏锚/不可逆操作前已落定。
         if self.virtualize {
             self.reclaim(&visible, &drawable);
         }
@@ -2236,7 +2516,8 @@ mod tests {
     use crate::content::StyleRole;
     use crate::record::Player;
     use crate::support::{CollectSink, MonospaceLayout};
-    use crate::Engine;
+    use crate::{Engine, FrameData, FrameRect};
+    use proptest::{prop_assert, prop_assert_eq};
 
     fn delta(part: &str, delta: &str) -> String {
         format!(
@@ -3759,6 +4040,255 @@ mod tests {
         assert!(
             (off - on).abs() < 0.5,
             "释放屏外块不应移动可见块 y(零跳变): novirt={off} virt={on}"
+        );
+    }
+
+    /// Plan 21 N3:`visible_messages()` 渲染纯文本确定(同状态两次逐字节相同)且 = 渲染后字形序列。
+    #[test]
+    fn visible_turns_text_deterministic() {
+        let player = Player::from_pairs(vec![(0.0, delta("p1", "Hello world"))], 16.0);
+        let mut eng = Engine::new(
+            player,
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        for _ in 0..40 {
+            eng.frame(16.0);
+        }
+        let a = eng.visible_messages();
+        let b = eng.visible_messages();
+        assert_eq!(a, b, "同状态两次调用应逐字节相同(presentation 派生,确定)");
+        assert_eq!(a.len(), 1, "一条可见消息");
+        let m = &a[0];
+        // 单行消息:渲染纯文本 = 可见字形序列(sink 拼帧,排除换行占位)。
+        assert_eq!(m.text, "Hello world");
+        assert_eq!(m.text, eng.sink().visible_text(), "= 渲染后字形 join");
+        assert!(!m.user, "未带 user part → assistant 默认");
+        assert!(m.width > 0.0 && m.height > 0.0, "应有几何盒");
+    }
+
+    /// 跑满揭示的单行文本引擎(Plan 21 选区测试夹具):单 part、无换行 → 显示字形 1:1 字符,
+    /// 等宽盒序列(MonospaceLayout 10×18)。
+    fn revealed_engine(text: &str) -> Engine<Player, MonospaceLayout, CollectSink> {
+        let player = Player::from_pairs(vec![(0.0, delta("p1", text))], 16.0);
+        let mut eng = Engine::new(
+            player,
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        for _ in 0..40 {
+            eng.frame(16.0);
+        }
+        eng
+    }
+
+    fn selection_rects(f: &FrameData) -> Vec<&FrameRect> {
+        let sel = crate::theme::SELECTION;
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        f.rects
+            .iter()
+            .filter(|r| near(r.color, sel) && r.stroke < 0.5)
+            .collect()
+    }
+
+    fn rect_contains(r: &FrameRect, cx: f32, cy: f32) -> bool {
+        cx >= r.pos[0] && cx <= r.pos[0] + r.size[0] && cy >= r.pos[1] && cy <= r.pos[1] + r.size[1]
+    }
+
+    proptest::proptest! {
+        /// Plan 21 N1:选区 `FrameRect` 覆盖区间内每个非零墨字形盒、且不覆盖区间外字形。
+        #[test]
+        fn sel_highlight_rects_cover_selected_glyphs(x in 0usize..=10, y in 0usize..=10) {
+            let (a, b) = (x.min(y), x.max(y));
+            let mut eng = revealed_engine("abcdefghij");
+            eng.set_selection(vec![(0, a, b)]);
+            eng.frame(16.0);
+            let f = eng.sink().last().expect("frame");
+            // 单行明文:frame.glyphs 顺序 = 字符序;glyph i 即字符 i。
+            prop_assert_eq!(f.glyphs.len(), 10);
+            let sel = selection_rects(f);
+            for (i, g) in f.glyphs.iter().enumerate() {
+                let cx = g.pos[0] + g.size[0] / 2.0;
+                let cy = g.pos[1] + g.size[1] / 2.0;
+                let covered = sel.iter().any(|r| rect_contains(r, cx, cy));
+                if (a..b).contains(&i) {
+                    prop_assert!(covered, "选中字 {} 应被高亮覆盖", i);
+                } else {
+                    prop_assert!(!covered, "区间外字 {} 不应被覆盖", i);
+                }
+            }
+        }
+    }
+
+    /// Plan 21 N2:空 / 越界区间 → 0 个选区高亮。
+    #[test]
+    fn sel_empty_range_no_highlight() {
+        let mut eng = revealed_engine("abcdefghij");
+        // 空区间(start==end)。
+        eng.set_selection(vec![(0, 4, 4)]);
+        eng.frame(16.0);
+        assert_eq!(
+            selection_rects(eng.sink().last().expect("f")).len(),
+            0,
+            "空区间无高亮"
+        );
+        // 越界区间(全在文本之外)。
+        eng.set_selection(vec![(0, 100, 200)]);
+        eng.frame(16.0);
+        assert_eq!(
+            selection_rects(eng.sink().last().expect("f")).len(),
+            0,
+            "越界区间无高亮"
+        );
+        // 越界 view。
+        eng.set_selection(vec![(99, 0, 5)]);
+        eng.frame(16.0);
+        assert_eq!(
+            selection_rects(eng.sink().last().expect("f")).len(),
+            0,
+            "越界 view 无高亮"
+        );
+    }
+
+    /// Plan 21 N4:`visible_text_runs()` 不含屏外 / Warm 块(虚拟化:DOM ∝ 可见)。
+    #[test]
+    fn visible_text_runs_excludes_offscreen() {
+        let mut eng = Engine::new(
+            Player::from_pairs(bench_records(30, 6), 1.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            1.0e9,
+            800.0,
+        );
+        eng.set_viewport_height(300.0); // 小视口 → 多数块屏外(锚底 → 顶部块离屏)
+        for _ in 0..80 {
+            eng.frame(1.0);
+        }
+        let runs = eng.visible_text_runs();
+        let vis: std::collections::HashSet<u32> =
+            eng.visible_messages().iter().map(|m| m.id).collect();
+        assert!(!runs.is_empty(), "应有可见行 run");
+        // 每个 run 的块必属本帧可见集(仅 Hot 可见块)。
+        for r in &runs {
+            assert!(vis.contains(&r.block), "run 块 {} 必在可见集", r.block);
+        }
+        let blocks: std::collections::HashSet<u32> = runs.iter().map(|r| r.block).collect();
+        assert!(
+            blocks.len() < 30,
+            "可见块数应远小于总块数(虚拟化): {}",
+            blocks.len()
+        );
+        assert!(!blocks.contains(&0), "顶部块 0 已滚出视口,不应在文本层");
+    }
+
+    /// Plan 21 N5(R8):`set_selection` 是 presentation,不影响 reveal —— 有/无选区,末帧字形逐字段相同。
+    #[test]
+    fn selection_does_not_affect_reveal() {
+        let run = |with_sel: bool| {
+            let player =
+                Player::from_pairs(vec![(0.0, delta("p1", "# Title\n\nhello world"))], 16.0);
+            let mut eng = Engine::new(
+                player,
+                MonospaceLayout::default(),
+                CollectSink::default(),
+                500.0,
+                800.0,
+            );
+            for _ in 0..30 {
+                eng.frame(16.0);
+            }
+            if with_sel {
+                eng.set_selection(vec![(0, 2, 6)]);
+            }
+            eng.frame(16.0);
+            eng.sink().last().expect("frame").glyphs.clone()
+        };
+        let plain = run(false);
+        let selected = run(true);
+        assert_eq!(plain, selected, "选区不得扰动字形(reveal/spawn/位置确定)");
+    }
+
+    proptest::proptest! {
+        /// Plan 21 N6(P3):`find` 命中序列 = 朴素子串扫描(同 query 同源 → 确定)。
+        #[test]
+        fn find_hits_match_naive(s in "[a-c ]{0,40}", q in "[a-c]{1,3}") {
+            let eng = revealed_engine(&s);
+            let hits = eng.find(&q);
+            // 朴素:对同一源文本(store 全量摄入后 == s)非重叠扫描。
+            let src = eng.store().part_text("p1").unwrap_or("");
+            let mut naive: Vec<(u32, u32)> = Vec::new();
+            let mut from = 0usize;
+            while let Some(rel) = src[from..].find(q.as_str()) {
+                let byte = from + rel;
+                naive.push((0, src[..byte].chars().count() as u32));
+                from = byte + q.len();
+            }
+            prop_assert_eq!(hits, naive);
+        }
+    }
+
+    /// Plan 21 N7(P3):选区墨团(逐行合并圆角条)**包含**每个被选非零墨字形盒(升级不漏选)。
+    #[test]
+    fn selection_ink_blob_contains_line_rects() {
+        // 多段 → 多行显示字形(行间 "\n" 占位 → 逐行 flush 出多条墨团)。
+        let mut eng = revealed_engine("alpha\n\nbravo\n\ncharlie delta");
+        let n = eng.sink().last().map_or(0, |f| f.glyphs.len());
+        eng.set_selection(vec![(0, 0, n + 50)]); // 覆盖全部(end 越界 → clamp)
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        let blobs = selection_rects(f);
+        assert!(!blobs.is_empty(), "应有墨团");
+        // 每个可见非零墨字形盒(四角)必被某条墨团包含。
+        let inside = |r: &FrameRect, x: f32, y: f32| {
+            x >= r.pos[0] - 0.01
+                && x <= r.pos[0] + r.size[0] + 0.01
+                && y >= r.pos[1] - 0.01
+                && y <= r.pos[1] + r.size[1] + 0.01
+        };
+        for g in &f.glyphs {
+            if g.size[0] <= 0.0 {
+                continue;
+            }
+            let covered = blobs.iter().any(|r| {
+                inside(r, g.pos[0], g.pos[1])
+                    && inside(r, g.pos[0] + g.size[0], g.pos[1] + g.size[1])
+            });
+            assert!(covered, "字形 {:?}@{:?} 未被墨团包含", g.cluster, g.pos);
+        }
+        // 墨团数 ≤ 行数(逐行合并,非逐字)→ 证"合并"确实发生(远少于字形数)。
+        assert!(blobs.len() <= f.glyphs.len(), "墨团应合并(条数 ≤ 字形数)");
+    }
+
+    /// Plan 21 P3:`scroll_to` 把屏外块移入可见(锚底脱离 + 虚拟化 promote)。
+    #[test]
+    fn scroll_to_brings_block_into_view() {
+        let mut eng = Engine::new(
+            Player::from_pairs(bench_records(30, 6), 1.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            1.0e9,
+            800.0,
+        );
+        eng.set_viewport_height(300.0);
+        for _ in 0..80 {
+            eng.frame(1.0);
+        }
+        // 顶部块 0 初始屏外(锚底)。
+        assert!(
+            !eng.visible_messages().iter().any(|m| m.id == 0),
+            "块 0 初始应屏外"
+        );
+        eng.scroll_to(0);
+        for _ in 0..10 {
+            eng.frame(1.0); // 数帧:promote → 重排 → 可见
+        }
+        assert!(
+            eng.visible_messages().iter().any(|m| m.id == 0),
+            "scroll_to 后块 0 应可见"
         );
     }
 

@@ -94,11 +94,18 @@ async function main() {
     // Plan 16 §2.7:代码块 copy 图标改走程序化 ShaderBox(不再预载 copy.svg 纹理)。
     setInterval(() => pumpImageLoads(chat), 120);
   }
-  // 动图 DOM overlay(Plan 14 ⑥):每帧把动图 `<img>` 同步到相机位置(随 pan/zoom 跟手)。
+  // 动图 DOM overlay(Plan 14 ⑥)+ 复制按钮(Plan 21 P1)+ 文本层(Plan 21 P2):每帧同步到相机位置。
   {
     const { pumpEmbedOverlay } = await import("./embed-overlay");
+    const { pumpCopyButtons } = await import("./copy-button");
+    const { pumpTextLayer, attachSelection } = await import("./text-layer");
+    const { mountFindBar } = await import("./find-bar");
+    attachSelection(chat); // selectionchange → set_selection(节流 rAF)
+    mountFindBar(chat); // Plan 21 P3:Cmd+F 跨全历史查找
     const tick = () => {
       pumpEmbedOverlay(chat);
+      pumpCopyButtons(chat);
+      pumpTextLayer(chat, canvas);
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
