@@ -49,7 +49,9 @@ test("E3 全 part 兜底可见(tool/reasoning/file)", async ({ page }) => {
     const runs = await seen();
     for (const n of needles) expect(runs, `view ${view} 应含 "${n}"`).toContain(n);
   };
-  await expectVisible(1, "tool:bash", "ls -la");
-  await expectVisible(2, "reasoning", "思考要点ZZZ");
+  // Plan 23:tool/reasoning 走 registry 漂亮卡(`▸ bash [done]` / `💭 Thinking`),内容仍完整可见;
+  // file 无 specific 渲染器 → 仍走 Plan 22 `display_source` markdown 兜底。
+  await expectVisible(1, "bash", "ls -la");
+  await expectVisible(2, "Thinking", "思考要点ZZZ");
   await expectVisible(3, "file:note.txt");
 });
