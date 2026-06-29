@@ -157,7 +157,10 @@ pub(crate) fn assert_renderfn_conforms(f: RenderFn) {
         let has_input =
             !part.kind_tag.is_empty() || !part.text.is_empty() || part.payload_json.is_some();
         if has_input {
-            assert!(!a.is_empty(), "非空输入却空输出: kind={kind:?} part={part:?}");
+            assert!(
+                !a.is_empty(),
+                "非空输入却空输出: kind={kind:?} part={part:?}"
+            );
         }
     }
 }
@@ -171,13 +174,13 @@ pub(crate) fn adversarial_render_parts() -> Vec<(PartKind, RenderPart)> {
         payload_json: json.map(str::to_owned),
     };
     let bodies = [
-        mk("", "", None),                                              // 全空
-        mk("tag", "", None),                                           // 只标签
-        mk("tag", "", Some("{}")),                                     // 空 json
+        mk("", "", None),                                               // 全空
+        mk("tag", "", None),                                            // 只标签
+        mk("tag", "", Some("{}")),                                      // 空 json
         mk("tool:bash · running", "", Some("{\"cmd\":\"ls -la\\n\"}")), // 典型工具
-        mk("reasoning", "# 标题\n**粗** `码`", None),                  // markdown
-        mk("x", "🦀\u{200b}混合", Some("[1,2,3]")),                    // emoji/零宽/CJK 混合
-        mk("long", &"a".repeat(2000), None),                           // 超长
+        mk("reasoning", "# 标题\n**粗** `码`", None),                   // markdown
+        mk("x", "🦀\u{200b}混合", Some("[1,2,3]")),                     // emoji/零宽/CJK 混合
+        mk("long", &"a".repeat(2000), None),                            // 超长
     ];
     let kinds = [
         PartKind::Text,
@@ -245,7 +248,9 @@ mod tests {
         let p = part("tool:bash", "", Some("{}"));
 
         // 未注册 → 兜底(含身份标签)。
-        assert!(joined(&reg.render(PartKind::Tool, &p, &RenderCtx::default())).contains("tool:bash"));
+        assert!(
+            joined(&reg.render(PartKind::Tool, &p, &RenderCtx::default())).contains("tool:bash")
+        );
 
         // 注册 specific → 覆盖该 kind。
         reg.register(PartKind::Tool, f);
@@ -258,7 +263,9 @@ mod tests {
         // 未覆盖的 kind 仍走兜底 → UI 始终完整。
         assert!(!reg.has_specific(PartKind::Reasoning));
         let rp = part("reasoning", "思考", None);
-        assert!(joined(&reg.render(PartKind::Reasoning, &rp, &RenderCtx::default())).contains("思考"));
+        assert!(
+            joined(&reg.render(PartKind::Reasoning, &rp, &RenderCtx::default())).contains("思考")
+        );
     }
 
     #[test]

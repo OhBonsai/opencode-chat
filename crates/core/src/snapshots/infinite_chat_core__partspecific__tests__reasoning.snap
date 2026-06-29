@@ -1,0 +1,9 @@
+---
+source: crates/core/src/partspecific.rs
+expression: "dump(&reasoning_render(PartKind::Reasoning,\n&part(\"reasoning\", \"先 `读码` 再 **决定**\", None), &ctx))"
+---
+ToolTitle | 💭 Thinking\n
+Reasoning | 先 
+Code | 读码
+Reasoning |  再 
+Reasoning | 决定

@@ -65,6 +65,14 @@ fn style_color(s: u32) -> vec3<f32> {
         case 48u: { return vec3<f32>(0.45, 0.50, 0.58); }    // CodeComment(灰)
         case 49u: { return vec3<f32>(0.94, 0.66, 0.45); }    // CodeNumber(橙)
         case 50u: { return vec3<f32>(0.78, 0.82, 0.88); }    // CodePunct(浅灰白)
+        // part 渲染角色(Plan 23 / 0033):tool 卡 / reasoning / diff。
+        case 51u: { return vec3<f32>(0.60, 0.62, 0.70); }    // Reasoning(思考区:弱化灰)
+        case 52u: { return vec3<f32>(0.82, 0.86, 0.94); }    // ToolTitle(工具名:亮中性)
+        case 53u: { return vec3<f32>(0.60, 0.64, 0.72); }    // ToolArg(参数:弱化)
+        case 54u: { return vec3<f32>(0.86, 0.88, 0.92); }    // ToolOutput(输出:正文中性)
+        case 55u: { return vec3<f32>(0.70, 0.78, 0.66); }    // ToolBadge(状态徽章:中性绿,状态色靠 app rect)
+        case 56u: { return vec3<f32>(0.62, 0.84, 0.55); }    // DiffAdded(新增:绿)
+        case 57u: { return vec3<f32>(0.92, 0.55, 0.55); }    // DiffRemoved(删除:红)
         default: { return vec3<f32>(0.90, 0.90, 0.92); }     // Normal / Rule(零墨)
     }
 }

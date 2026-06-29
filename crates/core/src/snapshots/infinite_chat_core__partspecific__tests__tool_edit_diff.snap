@@ -1,0 +1,11 @@
+---
+source: crates/core/src/partspecific.rs
+expression: "dump(&tool_render(PartKind::Tool,\n&part(\"tool:edit · completed\", \"\",\nSome(r#\"{\"metadata\":{\"filediff\":\"@@ -1,2 +1,2 @@\\n ctx\\n-old\\n+new\\n\"}}\"#)),\n&ctx))"
+---
+ToolTitle | ▸ edit
+ToolBadge |   [done]\n
+ToolBadge | +1 -1\n
+ToolArg |  @@ -1,2 +1,2 @@\n
+ToolOutput |   ctx\n
+DiffRemoved | -old\n
+DiffAdded | +new\n

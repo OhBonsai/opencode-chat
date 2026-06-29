@@ -1,0 +1,8 @@
+---
+source: crates/core/src/partspecific.rs
+expression: "dump(&tool_render(PartKind::Tool,\n&part(\"tool:bash · completed\", \"\",\nSome(r#\"{\"input\":{\"cmd\":\"ls -la\"},\"output\":\"a.txt\\nb.txt\"}\"#)), &ctx))"
+---
+ToolTitle | ▸ bash
+ToolBadge |   [done]\n
+ToolArg | {"cmd":"ls -la"}\n
+ToolOutput | a.txt\nb.txt

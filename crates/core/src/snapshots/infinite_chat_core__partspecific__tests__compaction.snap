@@ -1,0 +1,6 @@
+---
+source: crates/core/src/partspecific.rs
+expression: "dump(&compaction_render(PartKind::Compaction, &part(\"compaction\", \"\", None),\n&ctx))"
+---
+Reasoning | 上下文已压缩 · Context compacted\n
+Rule |

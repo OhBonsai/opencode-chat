@@ -120,6 +120,23 @@ pub enum StyleRole {
     CodeNumber,
     /// 标点 / 运算符。值 50。
     CodePunct,
+    // ── part 渲染角色(Plan 23 / 0033):tool 卡 / reasoning / diff 的语义角色。
+    //    **追加在末尾**(值 51+),不移动既有数值 → 守 0001 数值稳定(shader/atlas 分桶不动)。
+    //    视觉(卡底面板 / 左条 / diff 行底)由 app.rs 按角色画装饰,本枚举只定"是什么文字"。
+    /// 推理 / 思考区正文(弱化,对标 Quote 但语义独立 → 可单独折叠/上色)。值 51。
+    Reasoning,
+    /// 工具卡标题(工具名,稍亮 + 略强)。值 52。
+    ToolTitle,
+    /// 工具调用参数(args/input,弱化等宽)。值 53。
+    ToolArg,
+    /// 工具输出(output,正文中性)。值 54。
+    ToolOutput,
+    /// 工具状态徽章(`[running]`/`[done]`/`[error]`):render 侧据状态上色小标。值 55。
+    ToolBadge,
+    /// diff 新增行(`+`):render 侧据此画绿底。值 56。
+    DiffAdded,
+    /// diff 删除行(`-`):render 侧据此画红底。值 57。
+    DiffRemoved,
 }
 
 impl StyleRole {

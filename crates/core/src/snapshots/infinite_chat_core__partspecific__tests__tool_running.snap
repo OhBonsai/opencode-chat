@@ -1,0 +1,6 @@
+---
+source: crates/core/src/partspecific.rs
+expression: "dump(&tool_render(PartKind::Tool,\n&part(\"tool:grep · running\", \"\", Some(r#\"{\"input\":{\"pattern\":\"foo\"}}\"#)),\n&ctx))"
+---
+ToolTitle | ▸ grep
+ToolBadge |   [running]\n
