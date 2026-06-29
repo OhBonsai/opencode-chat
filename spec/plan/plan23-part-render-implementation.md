@@ -14,15 +14,16 @@
 > - **注册**:`default_registry()` 注册 R1/R2(Tool 含 R3 二级分派),其余 kind 继续走兜底(UI 始终完整)。
 > - **测试**:N2(diff proptest)· **N3 契约闸 ×3 渲染器** · N4(insta 快照 ×5)· N6(覆盖)。R4 分组复用 Plan 22 的 `partrender::group_message_parts`(Bucket)。
 >
-> **已接通端到端(Plan 22 合并后,2026-06-29)**:
+> **已接通端到端 + GPU 装饰(Plan 22 合并后,2026-06-29)**:
 > - **registry 接缝**:`Engine` 持 `registry = default_registry()`;`store::render_part(part_id) → (PartKind, RenderPart)` 投影 reasoning/tool/compaction;`app.rs::ensure_layouts` 命中 specific → `registry.render()` 直出 StyledSpan + `flat_node_tree`(Run 叶喂 reveal 调度器,逐帧 quota 揭入);其余 kind 回退 Plan 22 `display_source` markdown。
-> - **可见效果**:tool/reasoning/compaction 现以漂亮卡(`▸ bash [done]` / `💭 Thinking` / 压缩分隔线 + diff `+x -y` 增删色)渲染,经既有流式 reveal + Plan 19 tier 虚拟化(registry 纯函数 → release↔rebuild 天然等价)。
-> - 卡口:`fmt / clippy(workspace) / native-test(235) / wasm-build` 全绿。
+> - **GPU 装饰(R2/R3)**:`block_decorations` 按角色发 —— tool/reasoning 卡底圆角面板(`CARD_BG`+`CARD_BORDER`)、diff 行底色带(`DIFF_ADD_BG`/`DIFF_DEL_BG`,逐行连续段);居字与其它 rect 之下。
+> - **可见效果**:tool/reasoning/compaction 现以漂亮卡(`▸ bash [done]` / `💭 Thinking` / 压缩分隔线 + diff `+x -y` 摘要 + 增删行绿/红底)渲染,经既有流式 reveal + Plan 19 tier 虚拟化(registry 纯函数 → release↔rebuild 天然等价)。
+> - **卡口全绿**:`scripts/verify.sh` = PASS(fmt / clippy / native-test **263** / wasm-build / tsc 全绿;tsc 需同步了 Plan 22 的 `wasm-pkg.d.ts` facade)。
 >
-> **未落地(后续相)**:
-> - **GPU 装饰**:SDF 卡底面板(0018)、diff 行底色 rect、DiffChanges 条 widget(render shader)——角色已就位(51–57),待 `build_frame` 按角色 emit 面板/底色。
-> - **DOM 热区**:折叠箭头 / task 跳转 / 链接 / 图片预览 / Todo Dock(R5/R6,0022/0030)。
-> - **R5 file/task** 富媒体 + **E2E/视觉**(E1/E2/E3/V1,Playwright,需 `web/node_modules`)。
+> **未落地(后续富交互相 R5/R6)**:
+> - **DiffChanges 条 widget**(5 格条,render shader)—— 当前用 `+x -y` 文本摘要 + 行底色覆盖功能;独立 widget 待做。
+> - **DOM 热区**:折叠箭头 / task 跳转 / 链接 / 图片预览(R2 E2 / R5,0022/0030)。Todo/permission/question Dock 见 Plan 22 `web/src/dock.ts`。
+> - **R5 file/task** 富媒体(图片纹理 0007)+ **E2E/视觉**(E1/E2/E3/V1,Playwright)。
 - **与 Plan 22 并行(关键)**:Plan 22 产出 `RenderPart` 投影 + `RenderRegistry`(全兜底);**本 plan 只 `register(kind, specific)` 覆盖兜底**(`RenderFn = fn(PartKind, &RenderPart, &RenderCtx)->Vec<StyledSpan>`,纯函数 CR1/R8)。**唯一接触面 = registry 注册一行**(0006/0032/0033 数据驱动),冲突面极小。Plan 22 的 P4/P5(错误/韧性)与本 plan **同时进行不互阻**;本 plan 每做好一类就覆盖该 kind 的兜底,**未覆盖继续走兜底(丑但能看)→ UI 始终完整**(0033 §3 不变量)。
 - 前置:[ADR 0033 渲染契约](../decision/0033-part-render-contract.md)(本 plan 的输入,已实现)、[opencode 渲染调研](../research/opencode-desktop-part-rendering-and-interaction.md)/[业界对照](../research/agent-ui-industry-survey.md)(设计依据)、[0031](../decision/0031-event-fsm-resilience-and-js-rust-boundary.md)(状态/边界)、[0018](../decision/0018-sdf-panel-decoration-primitive.md)(SDF 面板)、[0007](../decision/0007-rich-media-embeds.md)(嵌入)、[0006](../decision/0006-inline-tags-and-extensibility.md)(reasoning 区)、[0027](../decision/0027-code-block-viewport.md)(代码/diff 视口)、[0022](../decision/0022-dom-overlay-layer.md)(DOM Dock)、[0029](../decision/0029-session-virtualization-and-glyph-working-set.md)(tier 虚拟化)、[0030](../decision/0030-text-copy-selection-and-a11y-mirror.md)/[0032](../decision/0032-interaction-architecture-sdf-world-not-component-framework.md)(交互三层:GPU 视觉 + 命中层 + DOM 热区)。
 - 目标:把 Plan 22 的「兜底标签块」逐类升级为**漂亮渲染:tool 卡 / reasoning 区 / file / diff / compaction**,**全走 tier 虚拟化、交互按 0030/0032 分工(GPU 视觉 + 命中层 + DOM 热区)**,数据模型对齐 opencode(SKIP patch/step,diff 挂 tool)。
