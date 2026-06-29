@@ -39,6 +39,16 @@ pub(crate) const TABLE_RULE: [f32; 4] = [0.26, 0.29, 0.36, 0.9];
 /// 任意多色(代码/链接/标题)不被洗淡。半透明蓝,暗底可辨;DOM `::selection` 透明,高亮独此一份。
 pub(crate) const SELECTION: [f32; 4] = [0.26, 0.45, 0.92, 0.40];
 
+// ── Plan 23 part 渲染装饰(tool 卡 / reasoning / diff;0018 SDF 面板 + 行底 rect)。
+/// tool / reasoning / compaction 卡底(SDF 面板,微透叠底 → 与正文区分)。
+pub(crate) const CARD_BG: [f32; 4] = [0.14, 0.16, 0.21, 0.55];
+/// tool / reasoning 卡描边(细,圆角)。
+pub(crate) const CARD_BORDER: [f32; 4] = [0.30, 0.34, 0.44, 0.7];
+/// diff 新增行底(绿,半透叠底)。
+pub(crate) const DIFF_ADD_BG: [f32; 4] = [0.22, 0.45, 0.27, 0.35];
+/// diff 删除行底(红,半透叠底)。
+pub(crate) const DIFF_DEL_BG: [f32; 4] = [0.50, 0.22, 0.24, 0.35];
+
 /// 调试:块 AABB 描边。
 pub(crate) const DBG_BLOCK: [f32; 4] = [0.40, 0.90, 0.50, 0.7];
 /// 调试:视口框描边。
