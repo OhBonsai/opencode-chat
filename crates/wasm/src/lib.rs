@@ -19,7 +19,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use infinite_chat_core::{
-    Clock, Connection, Engine, FrameData, FrameGlyph, Player, Record, RenderSink, TableStyle,
+    Clock, Connection, Engine, FrameData, FrameGlyph, Player, QueueConnection, Record, RenderSink,
+    TableStyle,
 };
 use infinite_chat_render::{
     EffectProfile, Geom, NodeId, PanelGeom, PanelScene, RenderBackend, Sample, Scene, WebGpuBackend,
@@ -28,7 +29,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::clock::WebClock;
 use crate::layout_bridge::LayoutBridge;
-use crate::transport::{fetch_snapshot, SseConnection};
+use crate::transport::fetch_snapshot;
 
 type AppEngine = Engine<Box<dyn Connection>, LayoutBridge, GpuSink>;
 type SharedState = Rc<RefCell<Option<AppState>>>;
@@ -795,6 +796,53 @@ impl ChatCanvas {
         }
     }
 
+    /// 会话生命周期态标签(Plan 22 P2/P4):`idle`/`awaiting`/`streaming`/`retrying`/`blocked:permission`/
+    /// `blocked:question`/`stalled`/`stopped`/`errored`。host 据此画活跃指示 / 禁发送 / 弹 Dock。
+    #[must_use]
+    pub fn session_status(&self) -> String {
+        self.state
+            .borrow()
+            .as_ref()
+            .map_or("idle", |app| app.engine.session_status_tag())
+            .to_owned()
+    }
+
+    /// 用户发送(Plan 22 P2:host 在 POST 消息前调)→ FSM AwaitingAck(起 no-reply 计时)。
+    pub fn note_send(&self) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.note_send();
+        }
+    }
+
+    /// 用户停止(Plan 22 P4 / F11):FSM Stopped + 冻结当前流式消息 + epoch+1。host 同时 POST abort。
+    pub fn stop_turn(&self) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.stop();
+        }
+    }
+
+    /// 注入一条原始 SSE 事件(Plan 22 P0:`transport.ts` 收到 SSE `data` 原文喂入;下帧解码消费)。
+    /// 这是 0031 的 TS→Rust 事件边界(字符串只过界一次,解码在 Rust)。也供 E2E 注入非文本 part。
+    pub fn push_event(&self, raw: &str) {
+        if let Some(app) = self.state.borrow().as_ref() {
+            app.engine.inject_raw(raw);
+        }
+    }
+
+    /// 用户在 Dock 应答权限/反问(Plan 22 P4)→ 解阻 FSM。host 另行 POST 真实 reply。
+    pub fn reply_permission(&self) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.note_reply();
+        }
+    }
+
+    /// 同上(反问应答)。
+    pub fn reply_question(&self) {
+        if let Some(app) = self.state.borrow_mut().as_mut() {
+            app.engine.note_reply();
+        }
+    }
+
     /// 设表格面板渲染样式(web 层 style 面板实时调;Plan 6 / 0018)。**无需重排/reload**:
     /// `block_decorations` 每帧读 → 下一帧即生效。`cfg` 为对象,字段缺省则保留默认:
     /// `{ lineColor:[r,g,b,a], headerFill:[r,g,b,a], aoColor:[r,g,b], lineW, ao, aoWidth, radius }`
@@ -1028,7 +1076,9 @@ async fn init_and_run(
     let conn: Box<dyn Connection> = match (replay, &server_url) {
         // 重放优先(Plan 5D):预录事件喂 Player,不连服务端。
         (Some(records), _) => Box::new(Player::new(records, 16.0)),
-        (None, Some(url)) => Box::new(SseConnection::connect(url)?),
+        // Plan 22 P0:服务端实时流改由 TS `transport.ts` 经 `push_event` 喂注入队列(韧性在 TS,
+        // 0031 §3);引擎侧用空 QueueConnection(事件走 inject 队列)。不再在 Rust 内开 SSE。
+        (None, Some(_)) => Box::new(QueueConnection::new()),
         (None, None) => Box::new(synthetic()),
     };
     let layout = LayoutBridge::new(layout_fn, measure_fn);

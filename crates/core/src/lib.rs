@@ -25,6 +25,7 @@ mod nodes;
 mod partrender;
 mod protocol;
 mod record;
+mod resilience;
 mod reveal;
 mod seam;
 mod shaderbox;
@@ -45,18 +46,20 @@ pub use frame::{
     FrameData, FrameEmbed, FrameGlyph, FrameImage, FramePanel, FrameRect, FrameShaderBox,
     FrameWidget, PANEL_AO, PANEL_GRID, WIDGET_BOX, WIDGET_RULE, WIDGET_RULE_CAT,
 };
-pub use fsm::{TurnStatus, TurnTracker};
+pub use fsm::{next_status, Blocker, FsmInput, SessionStatus, TurnStatus, TurnTracker};
 pub use math::{
     font_role, katex_font_base, layout_math, math_to_frame, MathGlyph, MathLayout, MathRule,
 };
 pub use nodes::{glyph_key, Node, NodeKind, NodeTree};
 pub use partrender::{
-    fallback_render, PartKind, RenderCtx, RenderFn, RenderPart, RenderRegistry,
+    fallback_render, group_message_parts, is_context_tool, Bucket, PartKind, RenderCtx, RenderFn,
+    RenderPart, RenderRegistry,
 };
 pub use protocol::{
     decode, parse_snapshot, Envelope, Event, Part, ProtocolError, SnapshotMessage, TextPartData,
 };
 pub use record::{Player, Record, Recorder};
+pub use resilience::{is_quota_error, merge_ordered, should_bottom_out, temp_should_replace};
 pub use reveal::{
     block_kind, is_nodespawn, is_structural, layout_gate, ordering_for, resolve_tree, GlyphPlan,
     Ordering, RevealScheduler, RevealUnit, TableStyleKind, DEFAULT_REVEAL_CPS,
@@ -72,4 +75,6 @@ pub use shaderbox::{
 pub use smoother::{Revealed, Smoother};
 pub use spatial::SpatialGrid;
 pub use store::{Role, Store};
-pub use support::{CollectSink, MonospaceLayout, NullSink};
+pub use support::{
+    push_event, CollectSink, EventQueue, MonospaceLayout, NullSink, QueueConnection,
+};

@@ -71,6 +71,16 @@ async function main() {
   chat.set_math_em(FONT_SIZE); // 数学字号 = 正文字号(含 DPR);显示数学 ×1.3 = H3(Plan 12)
   chat.start();
 
+  // Plan 22 P0:服务端实时流由 TS SSE 客户端接(韧性在 TS:重连/心跳/僵尸/cache-bust),每条
+  // data 原文 → chat.push_event(解码在 Rust)。引擎侧用空 QueueConnection,不再在 Rust 内开 SSE。
+  if (serverUrl) {
+    const { SseClient } = await import("./sse-client");
+    new SseClient({
+      url: `${serverUrl}/event`,
+      onEvent: (raw) => chat.push_event(raw),
+    }).start();
+  }
+
   // Plan 13 §5:调试输入框直接 POST `/session/{id}/message` 实时对话(回包走现有 Rust SSE 渲染,
   // 零 wasm/core 改动)。**总是挂载**(立即可见;会话首发时惰性建),serverUrl 缺省用本地 opencode
   // 默认端口 4096。?model= 覆盖模型(同 scripts/chat.mjs)。?noinput 可关掉(纯看渲染时)。
@@ -100,12 +110,14 @@ async function main() {
     const { pumpCopyButtons } = await import("./copy-button");
     const { pumpTextLayer, attachSelection } = await import("./text-layer");
     const { mountFindBar } = await import("./find-bar");
+    const { pumpDock } = await import("./dock");
     attachSelection(chat); // selectionchange → set_selection(节流 rAF)
     mountFindBar(chat); // Plan 21 P3:Cmd+F 跨全历史查找
     const tick = () => {
       pumpEmbedOverlay(chat);
       pumpCopyButtons(chat);
       pumpTextLayer(chat, canvas);
+      pumpDock(chat); // Plan 22 P4:权限/反问 Dock(据会话态弹/收)
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);

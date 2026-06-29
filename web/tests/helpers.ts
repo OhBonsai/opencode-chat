@@ -7,12 +7,20 @@ export interface ChatHandle {
   seek_reveal(ms: number): void;
   pan_by(dx: number, dy: number): void;
   zoom_at(factor: number, sx: number, sy: number): void;
+  scroll_to(view: number): void;
   set_stream_rate(cps: number): void;
   set_reveal_cps(cps: number): void;
   set_selection(flat: Uint32Array): void;
   visible_turns(): string;
   visible_text_runs(): string;
   stats(): Record<string, number>;
+  // Plan 22:事件注入 + 会话态 + Dock 应答。
+  push_event(raw: string): void;
+  session_status(): string;
+  reply_permission(): void;
+  reply_question(): void;
+  note_send(): void;
+  stop_turn(): void;
 }
 
 export interface ScreenTurn {
