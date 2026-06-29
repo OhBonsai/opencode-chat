@@ -97,6 +97,46 @@ pub fn fallback_render(kind: PartKind, part: &RenderPart, _ctx: &RenderCtx) -> V
     out
 }
 
+/// 回合内 part 的渲染桶(Plan 22 §3.3):分组是结构契约,兜底与 specific 渲染器都按桶排布。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bucket {
+    /// 辅助时间线(reasoning / tool / 中间 text)。
+    Timeline,
+    /// 上下文噪音组(连续 read/glob/grep/list 工具,折叠降噪)。
+    Context,
+    /// 最终回复(尾部连续 text/file)。
+    FinalReply,
+}
+
+/// 工具名是否"上下文噪音"(read/glob/grep/list/ls)→ 归 Context 组降噪(采纳 opencode/调研)。
+#[must_use]
+pub fn is_context_tool(tool: &str) -> bool {
+    matches!(tool, "read" | "glob" | "grep" | "list" | "ls")
+}
+
+/// 把一轮内 part(按文档序)分三桶(Plan 22 §3.3,**纯函数 CR1/R8**):
+/// - 尾部连续 `text`/`file` → [`Bucket::FinalReply`];
+/// - 时间线区间内的上下文噪音工具(read/glob/…)→ [`Bucket::Context`];
+/// - 余下(reasoning / 其它 tool / 中间 text)→ [`Bucket::Timeline`]。
+///
+/// 返回与输入对齐的桶序列(`tools` 与 `kinds` 等长,非 tool 项给空串)。
+#[must_use]
+pub fn group_message_parts(kinds: &[PartKind], tools: &[&str]) -> Vec<Bucket> {
+    let n = kinds.len();
+    let mut out = vec![Bucket::Timeline; n];
+    let mut head = n; // 尾部连续 text/file = 最终回复
+    while head > 0 && matches!(kinds[head - 1], PartKind::Text | PartKind::File) {
+        head -= 1;
+        out[head] = Bucket::FinalReply;
+    }
+    for (j, b) in out.iter_mut().enumerate().take(head) {
+        if kinds[j] == PartKind::Tool && tools.get(j).is_some_and(|t| is_context_tool(t)) {
+            *b = Bucket::Context; // 时间线里上下文噪音工具折叠
+        }
+    }
+    out
+}
+
 /// 渲染分派注册表:`PartKind → RenderFn`,缺省走 [`fallback_render`]。
 /// Plan 22 只装兜底;Plan 23 `register` specific 覆盖某 kind。**加渲染器 = 注册一行。**
 pub struct RenderRegistry {
@@ -282,6 +322,35 @@ mod tests {
         let p = part("", "", None);
         let spans = fallback_render(PartKind::Unknown, &p, &RenderCtx::default());
         assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn n7_group_message_parts_buckets() {
+        use super::{group_message_parts, Bucket, PartKind};
+        // 轮内:reasoning, read, grep, bash, text, text
+        let kinds = [
+            PartKind::Reasoning,
+            PartKind::Tool,
+            PartKind::Tool,
+            PartKind::Tool,
+            PartKind::Text,
+            PartKind::Text,
+        ];
+        let tools = ["", "read", "grep", "bash", "", ""];
+        let got = group_message_parts(&kinds, &tools);
+        assert_eq!(
+            got,
+            vec![
+                Bucket::Timeline,   // reasoning
+                Bucket::Context,    // read(噪音折叠)
+                Bucket::Context,    // grep
+                Bucket::Timeline,   // bash(非噪音)
+                Bucket::FinalReply, // 尾部 text
+                Bucket::FinalReply, // 尾部 text
+            ]
+        );
+        // 确定性(R8):同输入同输出。
+        assert_eq!(got, group_message_parts(&kinds, &tools));
     }
 
     #[test]

@@ -65,6 +65,12 @@ impl Smoother {
         q.extend(graphemes.iter().map(|g| (*g).to_owned()));
     }
 
+    /// 丢弃某 part 的待吐队列(Plan 22 P3:非文本 part 载荷整体重写前重置,避免拼接旧尾)。
+    pub fn reset_part(&mut self, part_id: &str) {
+        self.queues.remove(part_id);
+        self.order.retain(|p| p != part_id);
+    }
+
     /// 待吐字形总数(backlog)。
     pub fn backlog(&self) -> usize {
         self.queues.values().map(VecDeque::len).sum()

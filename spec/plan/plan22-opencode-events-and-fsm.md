@@ -1,7 +1,16 @@
 # Plan 22:完成 opencode 全事件 — 边界 / 渲染 / 状态转化 / 错误处理
 
 - 日期:2026-06-24
-- 状态:**草案(待评审)**;落地 [0031](../decision/0031-event-fsm-resilience-and-js-rust-boundary.md)(韧性+边界)、扩 [0001](../decision/0001-canvas-architecture.md)(协议)/[0002](../decision/0002-event-driven-pipeline.md)(管线)/[0005](../decision/0005-turn-aggregation-and-settlement.md)(收尾)。
+- 状态:**P0–P5 全相完成(2026-06-29)**;native 247 测 + vitest 8 测 + Playwright(E3/E4)全绿经 `verify`/`test:unit`/`playwright`。F1–F12 容错全覆盖(F1 no-reply wall-clock + 真服务联调为人工 TODO §7.3)。落地 [0031](../decision/0031-event-fsm-resilience-and-js-rust-boundary.md)(韧性+边界)、扩 [0001](../decision/0001-canvas-architecture.md)/[0002](../decision/0002-event-driven-pipeline.md)/[0005](../decision/0005-turn-aggregation-and-settlement.md)。
+  - **P0 传输边界**:`QueueConnection`(core,host 喂队列)+ `Engine` 注入队列 + wasm `push_event`;`web/src/sse-client.ts`(SSE:指数退避重连/连接超时/35s 僵尸自愈/cache-bust)替换 Rust 内 SSE,`main.ts` 服务端路径挂它喂 `push_event`。**E1(vitest 7 测:退避/超时/僵尸/cache-bust)✅**
+  - **P1 全事件/Part 解码 + 承载**:`protocol.rs` `Event` 全 8 类 + `Part` 全分类(载荷 `serde_json::Value`);`store.rs` 分类 `PartRow` + `apply_part_removed` + `display_source`。未知→Ignored/Other(AR12)。**N1/N2 ✅**
+  - **P2 SessionStatus FSM**:`SessionStatus`(8 态)+ `FsmInput` + `next_status`(纯函数穷尽 match)+ 派生量;**已接入 `ingest_events`**(全事件驱动)。**N4 ✅**
+  - **P3 通用兜底渲染 + 分组**:`display_source` 兜底 markdown 经既有 `parse_markdown_nodes` 全管线 → **每个 part 都看得见**(标签+内容);tool 重写重渲;`group_message_parts`(三桶+context 折叠)。**N7/N8 + p3 集成 + E3(浏览器全 part 可见)✅**
+  - **P4 错误处理 + Dock**:错误卡恒一张(F4)/ ghost-abort 不弹卡(F3)/ 停止冻结消息(F11)/ epoch(F12)/ 孤儿 view 清理;`web/src/dock.ts` 权限·反问 Dock(读 `session_status()`,`reply_*` 解阻)。wasm `session_status()`/`note_send()`/`stop_turn()`/`reply_permission|question()`/`push_event()`。**p4 重放(F3/F4/F11)+ p0 注入 + E4(Dock 弹出/应答)✅**
+  - **P5 韧性**:FSM 全事件驱动 + 冻结集(F11)+ epoch(F12)+ `resilience.rs` 纯逻辑 **F6**(`merge_ordered` 非破坏时序合并)/ **F8**(`should_bottom_out` 无回复收尾注兜底卡,已接 idle)/ **F9**(`is_quota_error` 配额标注,已接 SessionError)/ **F10**(`temp_should_replace` 去重判据)。**F2**(僵尸自愈)由 `sse-client` 35s 僵尸表覆盖。**E2**(断连→重连→`server.connected`→resync)vitest 覆盖逻辑。
+  - **唯一真 TODO(需真服务,人工;§7.3)**:**F1**(no-reply wall-clock 计时由 host TS 起,app 已置 `AwaitingAck` 供其轮询)+ 真实 opencode server 全事件联调冒烟。F10 去重判据已测,接 chat-input 发送侧(temp 用户消息)是 send 流程的小增量。
+  - 备注:回合活跃/收尾由 `TurnTracker`(揭示收尾)+ `SessionStatus` FSM(生命周期态)并行,不回退。
+  - **测试总账(全绿)**:native `verify` 247 测(N1/N2/N4/N7/N8 + p0 注入 + p3 集成 + p4 F3/F4/F11 + p5 F8/F9 + resilience F6/F8/F9/F10)、vitest 8 测(E1 退避/超时/僵尸/cache-bust + E2 重连 resync)、Playwright E3(全 part 兜底可见)+ E4(权限/反问 Dock)。
 - 前置必读:`spec/knowledge/opencode.md`(接口真相)、[0031](../decision/0031-event-fsm-resilience-and-js-rust-boundary.md)、[0006](../decision/0006-inline-tags-and-extensibility.md)(reasoning/思考区)、[0007](../decision/0007-rich-media-embeds.md)(tool/file 卡片)、[0027](../decision/0027-code-block-viewport.md)(patch/diff)、[0029](../decision/0029-session-virtualization-and-glyph-working-set.md)(新块走 tier 虚拟化)。
 - 目标(**= 搭起能跑通的「丑骨架」**):把"只渲染 assistant 纯文本"升级为"opencode 全事件/全 Part **正确解码 + 承载 + 状态 + 容错**,且**每个 part 都用最简方式渲染出来**"。四件事:① 全事件/全 Part 解码与承载;② **通用兜底渲染**(每 part = 标签 + 原始内容,text/markdown/JSON 皆可,**不做漂亮卡**);③ 状态转化(SessionStatus FSM);④ 错误处理(错误卡 + F1–F12 + 权限/提问)。TS/Rust 边界按 0031。
 - **与 [Plan 23](./plan23-part-render-implementation.md) 的分工(可并行)**:**Plan 22 = 框架 + 通用兜底渲染器**(任何 part → 标签 + JSON/markdown,丑但完整);**Plan 23 = 每类专用漂亮渲染器**,经**渲染契约**(见 §3.2)注册进同一分派点逐个覆盖兜底。两份 plan **冻结契约后即可并行**:Plan 22 不依赖 Plan 23(兜底自洽),Plan 23 只对着契约写纯渲染函数、不碰事件/状态。

@@ -6,14 +6,14 @@
 use crate::camera::{Camera2D, Rect};
 use crate::content::{parse_markdown_nodes, StyleRole};
 use crate::frame::{FrameData, FrameGlyph, FramePanel, FrameRect, FrameWidget};
-use crate::fsm::{TurnStatus, TurnTracker};
+use crate::fsm::{next_status, FsmInput, SessionStatus, TurnStatus, TurnTracker};
 use crate::protocol::{decode, parse_snapshot, Event};
 use crate::reveal::{self, RevealScheduler, TableStyleKind};
-use crate::seam::{Connection, LayoutEngine, PlacedGlyph, RenderSink};
+use crate::seam::{Connection, LayoutEngine, PlacedGlyph, RawEvent, RenderSink};
 use crate::smoother::Smoother;
 use crate::spatial::SpatialGrid;
 use crate::store::Store;
-use crate::support::graphemes;
+use crate::support::{graphemes, EventQueue};
 use crate::theme;
 
 /// catch-up 字形的 spawn_time:置于"远古",着色器淡入早已完成(alpha=1),实现零动画(AR6)。
@@ -559,6 +559,19 @@ fn rendered_text(clusters: &[String]) -> String {
     clusters.concat()
 }
 
+/// 取 part 的 messageID(Plan 22 P4 / F11 冻结判定用;`Other` → 空)。
+fn part_message_id(part: &crate::protocol::Part) -> String {
+    use crate::protocol::Part;
+    match part {
+        Part::Text { message_id, .. }
+        | Part::Reasoning { message_id, .. }
+        | Part::Tool { message_id, .. }
+        | Part::File { message_id, .. }
+        | Part::Compaction { message_id, .. } => message_id.clone(),
+        Part::Other => String::new(),
+    }
+}
+
 /// 把一个块的显示字形按 `"\n"` 切行,产逐行 world 盒 + 文本(Plan 21 P2 文本层)。
 /// 行盒 = 该行字形的并集 AABB(world = `placed` 相对 + `origin`);纯换行/空行跳过。`char0` = 行首
 /// 字形在块内下标(`clusters`/`placed` 1:1)→ host DOM 选区映回字符区间用。
@@ -884,6 +897,16 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     /// presentation 输入(同相机 pan),**不进 reveal / 不入录像** → 不破 R8 重放(0030 §7.6)。
     /// `build_frame` 据此查 `cache.placed` 发选区高亮 `FrameRect`(glyph 前),文字永在其上。
     selection: Vec<(usize, usize, usize)>,
+    /// 会话生命周期态(Plan 22 P2/P4/P5):由 `ingest_events` 据事件 + `next_status` 驱动;派生
+    /// 活跃指示 / 可发送 / 错误卡。**不进录像内容**(presentation/控制态)。
+    session_status: crate::fsm::SessionStatus,
+    /// 已停止冻结的消息 id 集(Plan 22 P4 / F11):丢弃针对冻结消息的后续 part 事件。
+    frozen_messages: std::collections::HashSet<String>,
+    /// 重连/对账 epoch(Plan 22 P5 / F12):stop/切会话 +1 → 陈旧异步回包据此丢弃(wasm 侧用)。
+    epoch: u64,
+    /// host 注入事件队列(Plan 22 P0 / 0031 §3):TS transport `push_event` 塞这里,`ingest_events`
+    /// 与 `conn.poll()` 一并消费。**事件入口统一 = 录像入口**(transport 移 TS 不破重放)。
+    inject: EventQueue,
 }
 
 impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
@@ -921,6 +944,10 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             virtualize: true,
             last_visible: Vec::new(),
             selection: Vec::new(),
+            session_status: crate::fsm::SessionStatus::Idle,
+            frozen_messages: std::collections::HashSet::new(),
+            epoch: 0,
+            inject: EventQueue::default(),
         }
     }
 
@@ -1509,9 +1536,14 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
     }
 
-    /// 1) 收事件 → 解码 → 落 store(含 updated 对账,AR4)。
+    /// 收事件 → 解码 → 落 store(含 updated 对账,AR4)。
+    ///
+    /// 事件源 = `conn.poll()`(Player/SSE/synthetic)＋ host 注入队列(Plan 22 P0:TS transport
+    /// `push_event` / 测试注入)→ 统一一条解码路径。
     fn ingest_events(&mut self) {
-        for raw in self.conn.poll() {
+        let mut raws = self.conn.poll();
+        raws.extend(self.inject.borrow_mut().drain(..));
+        for raw in raws {
             match decode(raw.raw()) {
                 Ok(Event::PartDelta {
                     part_id,
@@ -1520,30 +1552,97 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                     delta,
                     ..
                 }) => {
+                    if self.frozen_messages.contains(&message_id) {
+                        continue; // F11:停止后丢弃针对冻结消息的事件
+                    }
                     self.store
                         .apply_delta(&part_id, &message_id, &field, &delta);
-                    self.turn.on_activity(self.now_ms);
+                    self.on_part_activity(&message_id);
                 }
                 Ok(Event::PartUpdated { part, .. }) => {
+                    let mid = part_message_id(&part);
+                    if self.frozen_messages.contains(&mid) {
+                        continue;
+                    }
                     self.store.apply_part_updated(&part);
-                    self.turn.on_activity(self.now_ms);
+                    self.on_part_activity(&mid);
                 }
-                // 会话状态:idle/完成 → 收尾信号;busy/retry → 仍活跃(Phase I)。
+                // 会话状态:idle/完成 → 收尾信号 + FSM Idle;busy → 活跃;retry → Retrying(F8)。
                 Ok(Event::SessionStatus { status }) => match status.as_str() {
-                    "idle" => self.turn.on_settle_signal(),
-                    "busy" | "retry" | "working" => self.turn.on_busy(),
+                    "idle" => {
+                        // F8:已发送(awaiting)却末条无任何回复/错误 → 注兜底错误卡(别静默卡死)。
+                        let awaiting =
+                            matches!(self.session_status, SessionStatus::AwaitingAck { .. });
+                        if crate::resilience::should_bottom_out(awaiting, false, false) {
+                            self.store
+                                .upsert_error_card("", "请求结束但未收到回复(超时或服务端错误)");
+                            self.drive_fsm(&FsmInput::Error {
+                                error: "no response".to_owned(),
+                            });
+                        } else {
+                            self.turn.on_settle_signal();
+                            self.drive_fsm(&FsmInput::Idle);
+                        }
+                    }
+                    "retry" => {
+                        self.turn.on_busy();
+                        self.drive_fsm(&FsmInput::Retry { attempt: 0 });
+                    }
+                    "busy" | "working" => {
+                        self.turn.on_busy();
+                        self.drive_fsm(&FsmInput::Busy);
+                    }
                     _ => {}
                 },
                 Ok(Event::MessageUpdated {
                     message_id,
                     role,
                     session_id,
+                    error,
                 }) => {
-                    // live 角色入 store(chat 左右分栏唯一 live 来源);refresh_roles 下一帧带到 view。
                     self.store.set_message_role(&message_id, &role, &session_id);
+                    if let Some(msg) = error {
+                        // F4:错误终止 → 合成错误卡(恒一张)+ FSM Errored。
+                        self.store.upsert_error_card(&session_id, &msg);
+                        self.drive_fsm(&FsmInput::Error { error: msg });
+                    } else {
+                        self.on_part_activity(&message_id);
+                    }
+                }
+                // 删 part(P1 承载):从三表移除。
+                Ok(Event::PartRemoved { part_id, .. }) => {
+                    self.store.apply_part_removed(&part_id);
                     self.turn.on_activity(self.now_ms);
                 }
-                // 心跳/握手/未知:不改文档状态(AR12)。
+                // 会话级错误(F3 ghost-abort / F9 配额 / 错误卡)。
+                Ok(Event::SessionError {
+                    session_id, name, ..
+                }) => {
+                    if name.contains("Abort") {
+                        // F3 ghost-abort:不弹错误卡,回 Idle(temp 删除属 TS/P5)。
+                        self.store.clear_error_card();
+                        self.drive_fsm(&FsmInput::Idle);
+                    } else {
+                        // F9:配额/限流类错误 → 标注(host 据 status 弹配额 Dock / 发送前预检)。
+                        let msg = if crate::resilience::is_quota_error(&name) {
+                            format!("额度/配额受限:{name}")
+                        } else if name.is_empty() {
+                            "会话错误".to_owned()
+                        } else {
+                            name
+                        };
+                        self.store.upsert_error_card(&session_id, &msg);
+                        self.drive_fsm(&FsmInput::Error { error: msg });
+                    }
+                }
+                // 权限 / 提问 → 阻塞;应答 → 解阻(Dock 在 TS,P4)。
+                Ok(Event::PermissionAsked { .. }) => self.drive_fsm(&FsmInput::PermissionAsked),
+                Ok(Event::QuestionAsked { .. }) => self.drive_fsm(&FsmInput::QuestionAsked),
+                Ok(Event::PermissionReplied { .. } | Event::QuestionReplied { .. }) => {
+                    self.drive_fsm(&FsmInput::Replied);
+                }
+                Ok(Event::QuestionRejected { .. }) => self.drive_fsm(&FsmInput::Idle),
+                // 子会话 / 元信息 / 压缩 / 握手 / 心跳 / 实例销毁 / 未知:暂不改文档(TS/P5 resync 处理)。
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(target: "M2", error = %e, "丢弃无法解码的事件");
@@ -1552,26 +1651,157 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
         }
     }
 
+    /// 驱动会话 FSM(Plan 22 P2/P4):`next_status` 纯转移,集中一处。
+    fn drive_fsm(&mut self, input: &FsmInput) {
+        self.session_status = next_status(&self.session_status, input);
+    }
+
+    /// part 活动(delta/updated 真内容到达):刷新收尾时钟 + 清陈旧合成错误卡(F4)+ 推进 FSM
+    /// (等待态首包 → Streaming,否则 Activity 复活)。
+    fn on_part_activity(&mut self, message_id: &str) {
+        self.turn.on_activity(self.now_ms);
+        if self.store.has_error_card() {
+            self.store.clear_error_card(); // F4:真回复到 → 清陈旧合成卡(恒一张)
+        }
+        let input = if matches!(self.session_status, SessionStatus::AwaitingAck { .. }) {
+            FsmInput::FirstPart {
+                message_id: message_id.to_owned(),
+            }
+        } else {
+            FsmInput::Activity
+        };
+        self.drive_fsm(&input);
+    }
+
+    /// 用户发送(Plan 22 P2:host 发消息前调)→ FSM AwaitingAck(起 no-reply 计时,F1)。
+    pub fn note_send(&mut self) {
+        self.drive_fsm(&FsmInput::Send {
+            now_ms: self.now_ms,
+        });
+    }
+
+    /// 用户停止(Plan 22 P4 / F11):FSM Stopped + 冻结当前流式消息(丢弃其后续事件)+ epoch+1。
+    pub fn stop(&mut self) {
+        if let Some(mid) = self.session_status.streaming_id() {
+            if !mid.is_empty() {
+                self.frozen_messages.insert(mid.to_owned());
+            }
+        }
+        self.epoch += 1;
+        self.drive_fsm(&FsmInput::Stop);
+    }
+
+    /// 当前会话生命周期态(可观测;host 据此画活跃指示/禁发送/弹 Dock)。
+    #[must_use]
+    pub fn session_status(&self) -> &SessionStatus {
+        &self.session_status
+    }
+
+    /// 重连/对账 epoch(Plan 22 P5 / F12:陈旧异步回包据此丢弃)。
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// host 注入事件队列把手(Plan 22 P0):TS transport 持一份 clone,经 [`push_event`](crate::push_event)
+    /// 塞原始事件;下帧 `ingest_events` 消费。
+    #[must_use]
+    pub fn event_queue(&self) -> EventQueue {
+        self.inject.clone()
+    }
+
+    /// 注入一条原始事件(Plan 22 P0:host/测试便捷入口;等价 push 到 `event_queue`)。
+    pub fn inject_raw(&self, raw: &str) {
+        self.inject.borrow_mut().push_back(RawEvent::new(raw));
+    }
+
+    /// 用户应答权限/反问(Plan 22 P4:Dock 点击 → 解阻)。host 同时 POST 真实 reply。
+    pub fn note_reply(&mut self) {
+        self.drive_fsm(&FsmInput::Replied);
+    }
+
+    /// 会话态的稳定字符串标签(Plan 22:host 据此画活跃指示/禁发送/弹 Dock;wasm `stats` 用)。
+    #[must_use]
+    pub fn session_status_tag(&self) -> &'static str {
+        use crate::fsm::Blocker;
+        match &self.session_status {
+            SessionStatus::Idle => "idle",
+            SessionStatus::AwaitingAck { .. } => "awaiting",
+            SessionStatus::Streaming { .. } => "streaming",
+            SessionStatus::Retrying { .. } => "retrying",
+            SessionStatus::Blocked {
+                on: Blocker::Permission,
+                ..
+            } => "blocked:permission",
+            SessionStatus::Blocked {
+                on: Blocker::Question,
+                ..
+            } => "blocked:question",
+            SessionStatus::Stalled => "stalled",
+            SessionStatus::Stopped => "stopped",
+            SessionStatus::Errored { .. } => "errored",
+        }
+    }
+
+    /// 清掉无对应 store part 的孤儿 view(Plan 22:part.removed / 错误卡清除后,视图不再渲染残留)。
+    fn clear_orphan_views(&mut self) {
+        let live: std::collections::HashSet<String> = self
+            .store
+            .parts_in_order()
+            .map(|(id, _)| id.to_owned())
+            .collect();
+        let orphans: Vec<String> = self
+            .views
+            .iter()
+            .filter(|v| !live.contains(&v.part_id) && (!v.revealed.is_empty() || v.cache.is_some()))
+            .map(|v| v.part_id.clone())
+            .collect();
+        for pid in orphans {
+            self.smoother.reset_part(&pid);
+            let v = self.view_mut(&pid);
+            v.revealed.clear();
+            v.pushed = 0;
+            v.pushed_bytes = 0;
+            v.spawn.clear();
+            v.cache = None;
+            v.settled = false;
+            v.agg = None;
+        }
+    }
+
     /// 2) 把 store 里新增的文本尾部切 grapheme 入 smoother。
     fn enqueue_new_text(&mut self) {
+        self.clear_orphan_views(); // 先清孤儿(part.removed / 错误卡清除)→ 不渲染残留
         let part_ids: Vec<String> = self
             .store
             .parts_in_order()
             .map(|(id, _)| id.to_owned())
             .collect();
         for part_id in part_ids {
-            // Plan 19 P1 真修:先比文本**字节长度**(O(1))。未变 → 跳过,免每帧重切 grapheme + 堆分配
-            // 整段(原 O(总历史)/帧 = fps 真凶)。已 settled 的海量历史 part 由此恒 O(1)。
-            let cur_bytes = match self.store.part_text(&part_id) {
+            // Plan 22 P3:喂渲染管线的是**显示源**(display_source:文本=正文;tool/file/compaction=
+            // 标签+内容的兜底 markdown)→ 每 part 都看得见。Plan 19 P1 优化照旧:先比字节长度 O(1) 跳过未变。
+            let cur_bytes = match self.store.display_source(&part_id) {
                 Some(text) => text.len(),
                 None => continue,
             };
             if cur_bytes == self.view_mut(&part_id).pushed_bytes {
                 continue;
             }
-            // 变了(增长或对账缩短)→ 重切。克隆成 owned grapheme,先释放 store 借用再改 view/smoother。
-            let gs: Vec<String> = match self.store.part_text(&part_id) {
-                Some(text) => graphemes(text).into_iter().map(str::to_owned).collect(),
+            // Plan 22 P3:非文本 part(tool/file/…)的显示源可**整体重写**(如 tool pending→completed),
+            // 非 append → 重置该 part(清 smoother 队列 + view 流式态)后整段重推,避免拼接旧尾。
+            // 文本 part 仍走 append(流式逐字),保 Plan 19 优化。
+            if !self.store.part_is_text(&part_id) {
+                self.smoother.reset_part(&part_id);
+                let v = self.view_mut(&part_id);
+                v.revealed.clear();
+                v.pushed = 0;
+                v.spawn.clear();
+                v.cache = None;
+                v.settled = false;
+            }
+            // 变了(增长或对账缩短/载荷更新)→ 重切。克隆成 owned grapheme,先释放 store 借用再改 view/smoother。
+            let gs: Vec<String> = match self.store.display_source(&part_id) {
+                Some(text) => graphemes(&text).into_iter().map(str::to_owned).collect(),
                 None => continue,
             };
             let pushed = self.view_mut(&part_id).pushed;
@@ -2523,6 +2753,251 @@ mod tests {
         format!(
             r#"{{"type":"message.part.delta","properties":{{"sessionID":"s","messageID":"m","partID":"{part}","field":"text","delta":{delta:?}}}}}"#
         )
+    }
+
+    /// Plan 22 P3:非文本 part(tool/reasoning)经兜底显示源渲染出来 —— 标签 + 内容都可见(丑骨架)。
+    #[test]
+    fn p3_nontext_parts_render_via_fallback() {
+        let part_updated = |json: &str| -> String {
+            format!(
+                r#"{{"type":"message.part.updated","properties":{{"part":{json},"time":1.0}}}}"#
+            )
+        };
+        let recs = vec![
+            (
+                0.0,
+                part_updated(
+                    r#"{"type":"tool","id":"t1","messageID":"m1","tool":"bash","state":{"status":"completed","input":{"cmd":"ls"}}}"#,
+                ),
+            ),
+            (
+                0.0,
+                part_updated(
+                    r#"{"type":"reasoning","id":"r1","messageID":"m1","text":"先看要点"}"#,
+                ),
+            ),
+        ];
+        let mut eng = Engine::new(
+            Player::from_pairs(recs, 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        for _ in 0..60 {
+            eng.frame(16.0);
+        }
+        let text = eng.sink().visible_text();
+        assert!(text.contains("tool:bash"), "工具身份标签应可见: {text}");
+        assert!(text.contains("cmd"), "工具载荷(input)应可见: {text}");
+        assert!(text.contains("reasoning"), "推理标签应可见: {text}");
+        assert!(text.contains("先看要点"), "推理正文应可见: {text}");
+    }
+
+    /// Plan 22 P3:tool 载荷整体重写(pending→completed)→ 重置重渲,不拼接旧尾(无残留)。
+    #[test]
+    fn p3_tool_rewrite_resets_not_appends() {
+        let part_updated = |status: &str| -> String {
+            format!(
+                r#"{{"type":"message.part.updated","properties":{{"part":{{"type":"tool","id":"t1","messageID":"m1","tool":"bash","state":{{"status":"{status}"}}}},"time":1.0}}}}"#
+            )
+        };
+        let mut eng = Engine::new(
+            Player::from_pairs(
+                vec![
+                    (0.0, part_updated("pending")),
+                    (5.0, part_updated("completed")),
+                ],
+                16.0,
+            ),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        for _ in 0..60 {
+            eng.frame(16.0);
+        }
+        let text = eng.sink().visible_text();
+        assert!(text.contains("completed"), "应显示最终状态: {text}");
+        assert!(!text.contains("pending"), "旧状态不应残留(已重置): {text}");
+    }
+
+    // ───────── Plan 22 P4/P5:错误卡 + 停止冻结(F3/F4/F11 重放) ─────────
+    use crate::SessionStatus;
+
+    fn run_events(
+        recs: Vec<(f64, String)>,
+        frames: usize,
+    ) -> Engine<Player, MonospaceLayout, CollectSink> {
+        let mut eng = Engine::new(
+            Player::from_pairs(recs, 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        for _ in 0..frames {
+            eng.frame(16.0);
+        }
+        eng
+    }
+
+    const ERR_EVENT: &str = r#"{"type":"message.updated","properties":{"info":{"id":"m1","role":"assistant","error":{"name":"APIError"}}}}"#;
+
+    #[test]
+    fn p4_error_card_idempotent_one_card() {
+        // F4 恒一张:重复错误事件 → 只一张合成错误卡。
+        let eng = run_events(vec![(0.0, ERR_EVENT.into()), (1.0, ERR_EVENT.into())], 30);
+        assert!(matches!(
+            eng.session_status(),
+            SessionStatus::Errored { .. }
+        ));
+        let text = eng.sink().visible_text();
+        assert_eq!(text.matches("[error]").count(), 1, "应恒一张错误卡: {text}");
+        assert!(text.contains("APIError"), "错误文案可见: {text}");
+    }
+
+    #[test]
+    fn p4_real_response_clears_error_card() {
+        // F4:错误后真回复到达 → 清陈旧合成卡。
+        let eng = run_events(vec![(0.0, ERR_EVENT.into()), (1.0, delta("p1", "hi"))], 40);
+        let text = eng.sink().visible_text();
+        assert!(!text.contains("[error]"), "真回复应清错误卡: {text}");
+        assert!(text.contains("hi"), "真回复可见: {text}");
+        assert!(matches!(
+            eng.session_status(),
+            SessionStatus::Streaming { .. }
+        ));
+    }
+
+    #[test]
+    fn p4_ghost_abort_no_card() {
+        // F3 ghost-abort:AbortError → 不弹错误卡,回 Idle。
+        let abort = r#"{"type":"session.error","properties":{"sessionID":"s","error":{"name":"AbortError"}}}"#;
+        let eng = run_events(vec![(0.0, abort.into())], 20);
+        assert!(
+            !eng.sink().visible_text().contains("[error]"),
+            "ghost-abort 不弹卡"
+        );
+        assert_eq!(eng.session_status(), &SessionStatus::Idle);
+    }
+
+    #[test]
+    fn p4_stop_freezes_message_events() {
+        // F11:停止 → 冻结当前流式消息 → 其后续 part 事件被丢弃。
+        let recs = vec![(0.0, delta("p1", "a")), (100.0, delta("p1", "b"))];
+        let mut eng = Engine::new(
+            Player::from_pairs(recs, 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        eng.note_send(); // → AwaitingAck,使首个 part 走 FirstPart 捕获 message_id
+        for _ in 0..3 {
+            eng.frame(16.0);
+        }
+        assert!(matches!(
+            eng.session_status(),
+            SessionStatus::Streaming { .. }
+        ));
+        eng.stop();
+        assert_eq!(eng.session_status(), &SessionStatus::Stopped);
+        for _ in 0..20 {
+            eng.frame(16.0);
+        }
+        assert_eq!(eng.sink().visible_text(), "a", "冻结消息的后续段应被丢弃");
+    }
+
+    #[test]
+    fn p0_injected_events_decode_render_and_drive_fsm() {
+        // Plan 22 P0:host 注入事件(= TS transport push_event 路径)→ 解码 → 驱动 FSM + 渲染。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        eng.inject_raw(r#"{"type":"permission.asked","properties":{"sessionID":"s"}}"#);
+        eng.frame(16.0);
+        assert_eq!(
+            eng.session_status_tag(),
+            "blocked:permission",
+            "权限请求 → 阻塞"
+        );
+        eng.note_reply();
+        assert_ne!(
+            eng.session_status_tag(),
+            "blocked:permission",
+            "应答 → 解阻"
+        );
+        // 注入工具 part → 兜底渲染可见。
+        eng.inject_raw(
+            r#"{"type":"message.part.updated","properties":{"part":{"type":"tool","id":"t1","messageID":"m1","tool":"bash","state":{"status":"completed"}},"time":1.0}}"#,
+        );
+        for _ in 0..40 {
+            eng.frame(16.0);
+        }
+        assert!(
+            eng.sink().visible_text().contains("tool:bash"),
+            "注入的工具 part 应渲染: {}",
+            eng.sink().visible_text()
+        );
+    }
+
+    #[test]
+    fn p5_f8_bottom_out_card_when_no_response() {
+        // F8:已发送(AwaitingAck)却收到 idle 收尾而无任何回复 → 注兜底错误卡,不静默卡死。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        eng.note_send();
+        eng.inject_raw(r#"{"type":"session.status","properties":{"status":{"type":"idle"}}}"#);
+        for _ in 0..30 {
+            eng.frame(16.0);
+        }
+        assert!(
+            eng.sink().visible_text().contains("[error]"),
+            "无回复收尾应注兜底错误卡: {}",
+            eng.sink().visible_text()
+        );
+        assert!(matches!(
+            eng.session_status(),
+            SessionStatus::Errored { .. }
+        ));
+    }
+
+    #[test]
+    fn p5_f9_quota_error_card() {
+        // F9:配额/限流类错误 → 错误卡标注额度受限。
+        let mut eng = Engine::new(
+            Player::from_pairs(vec![], 16.0),
+            MonospaceLayout::default(),
+            CollectSink::default(),
+            100_000.0,
+            800.0,
+        );
+        eng.inject_raw(
+            r#"{"type":"session.error","properties":{"sessionID":"s","error":{"name":"RateLimitError"}}}"#,
+        );
+        for _ in 0..30 {
+            eng.frame(16.0);
+        }
+        let t = eng.sink().visible_text();
+        assert!(
+            t.contains("额度") || t.contains("配额"),
+            "配额错误卡应标注: {t}"
+        );
+        assert!(matches!(
+            eng.session_status(),
+            SessionStatus::Errored { .. }
+        ));
     }
 
     #[test]

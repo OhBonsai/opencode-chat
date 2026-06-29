@@ -276,92 +276,12 @@ fn render_diff(diff: &str) -> Vec<StyledSpan> {
     out
 }
 
-// ───────────────────────── R4:回合分组(三桶 + context 折叠)─────────────────────────
-
-/// 分组用的最小 part 描述(core 纯函数输入;Plan 22 据 store 填)。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PartRef {
-    pub kind: PartKind,
-    /// 工具名(`kind == Tool` 时有意义,如 `read`/`bash`;其余空)。
-    pub tool: String,
-}
-
-impl PartRef {
-    #[must_use]
-    pub fn new(kind: PartKind, tool: impl Into<String>) -> Self {
-        Self {
-            kind,
-            tool: tool.into(),
-        }
-    }
-}
-
-/// 回合内 part 的分组结果(plan23 §1.1)。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PartGroup {
-    /// 辅助时间线单块(reasoning / tool 卡 / 中间文本)。
-    Aux(usize),
-    /// 连续 read/glob/grep/list → 一个 "Gathered context" 折叠组(降噪)。
-    Context(Vec<usize>),
-    /// 最终回复(尾部 text / file 主体)。
-    Final(usize),
-}
-
-/// 检索类工具(连续段折叠成 context 组;plan23 §1.1,采纳 opencode 降噪)。
-fn is_context_tool(name: &str) -> bool {
-    matches!(name, "read" | "glob" | "grep" | "list")
-}
-
-fn is_final_kind(kind: PartKind) -> bool {
-    matches!(kind, PartKind::Text | PartKind::File)
-}
-
-/// `group_message_parts`(CR1 纯函数,N1):turn 内 part →
-/// - **最终回复**:尾部连续 text/file → [`PartGroup::Final`](主体);
-/// - **辅助时间线**(其前):连续 read/glob/grep/list 折叠成 [`PartGroup::Context`];其余 → [`PartGroup::Aux`]。
-///
-/// 不变量:每个下标恰好出现一次;Context 组成员全是检索工具且极大连续段;Final 仅含尾部 text/file。
-#[must_use]
-pub fn group_message_parts(parts: &[PartRef]) -> Vec<PartGroup> {
-    // 尾部连续 text/file = 最终回复区;之前 = 辅助时间线。
-    let mut final_start = parts.len();
-    while final_start > 0 && is_final_kind(parts[final_start - 1].kind) {
-        final_start -= 1;
-    }
-
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < final_start {
-        let p = &parts[i];
-        if p.kind == PartKind::Tool && is_context_tool(&p.tool) {
-            // 折叠极大连续检索段。
-            let mut group = vec![i];
-            let mut j = i + 1;
-            while j < final_start
-                && parts[j].kind == PartKind::Tool
-                && is_context_tool(&parts[j].tool)
-            {
-                group.push(j);
-                j += 1;
-            }
-            out.push(PartGroup::Context(group));
-            i = j;
-        } else {
-            out.push(PartGroup::Aux(i));
-            i += 1;
-        }
-    }
-    for idx in final_start..parts.len() {
-        out.push(PartGroup::Final(idx));
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
     use super::{
-        compaction_render, default_registry, diff_parse_lines, group_message_parts,
-        reasoning_render, tool_render, DiffKind, PartGroup, PartRef,
+        compaction_render, default_registry, diff_parse_lines, reasoning_render, tool_render,
+        DiffKind,
     };
     use crate::content::{StyleRole, StyledSpan};
     use crate::partrender::{assert_renderfn_conforms, PartKind, RenderCtx, RenderPart};
@@ -519,41 +439,8 @@ mod tests {
         assert!(has_role(&spans, StyleRole::DiffRemoved), "缺删除行角色");
     }
 
-    // ── R4
-    #[test]
-    fn grouping_folds_context_and_marks_final() {
-        let parts = vec![
-            PartRef::new(PartKind::Reasoning, ""),
-            PartRef::new(PartKind::Tool, "read"),
-            PartRef::new(PartKind::Tool, "grep"),
-            PartRef::new(PartKind::Tool, "bash"),
-            PartRef::new(PartKind::Text, ""),
-        ];
-        let groups = group_message_parts(&parts);
-        assert_eq!(
-            groups,
-            vec![
-                PartGroup::Aux(0),
-                PartGroup::Context(vec![1, 2]), // read+grep 折叠
-                PartGroup::Aux(3),              // bash 独立
-                PartGroup::Final(4),            // 尾部 text
-            ]
-        );
-    }
-
-    #[test]
-    fn grouping_trailing_text_file_all_final() {
-        let parts = vec![
-            PartRef::new(PartKind::Tool, "bash"),
-            PartRef::new(PartKind::File, ""),
-            PartRef::new(PartKind::Text, ""),
-        ];
-        let groups = group_message_parts(&parts);
-        assert_eq!(
-            groups,
-            vec![PartGroup::Aux(0), PartGroup::Final(1), PartGroup::Final(2)]
-        );
-    }
+    // R4(回合分组三桶 + context 折叠)由 Plan 22 的 `partrender::group_message_parts`(Bucket)
+    // 提供并测试,本模块不再重复实现。
 
     // ── N6 覆盖:specific 注册 + 输出 ≠ 兜底
     #[test]
@@ -646,52 +533,6 @@ mod tests {
                 l.starts_with('+') && !l.starts_with("+++") && !l.starts_with("@@")).count();
             let parsed_add = a.iter().filter(|l| l.kind == DiffKind::Added).count();
             prop_assert_eq!(naive_add, parsed_add);
-        }
-
-        // N1:分组确定 + 全覆盖(每下标恰一次)+ Final 仅尾部 text/file。
-        #[test]
-        fn grouping_deterministic_total_coverage(
-            seq in proptest::collection::vec(0u8..5, 0..30)
-        ) {
-            let parts: Vec<PartRef> = seq.iter().map(|&t| {
-                let kind = match t {
-                    0 => PartKind::Text,
-                    1 => PartKind::Reasoning,
-                    2 => PartKind::Tool,
-                    3 => PartKind::File,
-                    _ => PartKind::Compaction,
-                };
-                // tool 一半是检索类(触发折叠),一半 bash。
-                let tool = if kind == PartKind::Tool { "read" } else { "" };
-                PartRef::new(kind, tool)
-            }).collect();
-
-            let a = group_message_parts(&parts);
-            let b = group_message_parts(&parts);
-            prop_assert_eq!(&a, &b);
-
-            // 全覆盖:展开所有 group 的下标 = 0..n 各一次。
-            let mut seen = vec![false; parts.len()];
-            for g in &a {
-                match g {
-                    PartGroup::Aux(i) | PartGroup::Final(i) => {
-                        prop_assert!(!seen[*i]);
-                        seen[*i] = true;
-                    }
-                    PartGroup::Context(ids) => for i in ids {
-                        prop_assert!(!seen[*i]);
-                        seen[*i] = true;
-                    }
-                }
-            }
-            prop_assert!(seen.iter().all(|&b| b));
-
-            // Final 仅含 text/file。
-            for g in &a {
-                if let PartGroup::Final(i) = g {
-                    prop_assert!(matches!(parts[*i].kind, PartKind::Text | PartKind::File));
-                }
-            }
         }
     }
 }

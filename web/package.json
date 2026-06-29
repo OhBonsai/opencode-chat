@@ -9,6 +9,7 @@
     "bake:ascii": "node ../scripts/bake-msdf.mjs --ascii --name ascii-msdf --size 48 --texture 512,512 --font lxgw-wenkai-v1.522/LXGWWenKai-Regular.ttf",
     "gen:longsession": "node ../scripts/gen-longsession.mjs --lines 10000 --turns 200",
     "bench": "playwright test bench.spec.ts",
+    "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -17,6 +18,7 @@
     "typescript": "^5",
     "vite": "^5",
     "vite-plugin-top-level-await": "^1",
-    "vite-plugin-wasm": "^3"
+    "vite-plugin-wasm": "^3",
+    "vitest": "^4.1.9"
   }
 }
