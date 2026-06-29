@@ -9,7 +9,9 @@ declare module "*infinite_chat_wasm.js" {
       runTexts: string[],
       runRoles: Uint32Array,
       maxWidth: number,
-      tables?: unknown,
+      // 最小 shim:`tables` 形状由 layout-bridge 的 TableRegionJS 定;facade 用 any 收(回调参数
+      // 逆变,宿主传更具体类型才不报错。真实 wasm-bindgen 绑定为 `config: any`)。
+      tables?: any,
     ) => Float32Array | { positions: Float32Array; tables: Float32Array };
     /// Plan 13 §4.2 measure 回调(可选):Taffy 叶子量尺寸 → [w, h];缺省时 wasm 退回 layout 派生。
     measure?: (runTexts: string[], runRoles: Uint32Array, availW: number) => Float32Array;
@@ -114,5 +116,46 @@ declare module "*infinite_chat_wasm.js" {
       cells: Float32Array;
       pixels: Uint8Array[];
     }): void;
+    // ── Plan 21 P2/P3:选区 / 复制 / 文本层 / 查找(0030 DOM overlay 宿主接口)。
+    /** Plan 21 P2:设选区,`flat` = 扁平三元组 `[block,start,end,...]`(end 不含);空 = 清。 */
+    set_selection(flat: Uint32Array): void;
+    /** Plan 21 P1:可见消息复制数据 JSON `[{id,turn,role,x,y,w,h,text}]`(设备像素)。 */
+    visible_turns(): string;
+    /** Plan 21 P2:可见文本 run JSON `[{block,char0,x,y,w,h,text}]`(虚拟透明文本层/原生选区)。 */
+    visible_text_runs(): string;
+    /** Plan 21 P3:跨全历史全文查找 → JSON `[{view,char}]`(含屏外/Warm 块)。 */
+    find(query: string): string;
+    /** Plan 21 P3:跳到某 view(Cmd+F 命中后),相机平移到块顶。 */
+    scroll_to(view: number): void;
+    // ── Plan 22:事件注入 + 会话 FSM + Dock 应答(0031 边界)。
+    /** Plan 22 P0:注入一条原始 SSE 事件(TS→Rust 事件边界;也供 E2E 注入非文本 part)。 */
+    push_event(raw: string): void;
+    /** Plan 22 P2/P4:会话生命周期态标签(idle/streaming/blocked:permission/…)。 */
+    session_status(): string;
+    /** Plan 22 P2:用户发送 → FSM AwaitingAck(起 no-reply 计时)。 */
+    note_send(): void;
+    /** Plan 22 P4/F11:用户停止 → FSM Stopped + 冻结当前流式消息 + epoch+1。 */
+    stop_turn(): void;
+    /** Plan 22 P4:Dock 应答权限请求 → 解阻 FSM。 */
+    reply_permission(): void;
+    /** Plan 22 P4:Dock 应答反问 → 解阻 FSM。 */
+    reply_question(): void;
+    // ── 揭示调度 / 调试播放器(Plan 8C/12/19/0019)。
+    /** Plan 12:数学每 em 的 world px = 正文字号(含 DPR)。 */
+    set_math_em(px: number): void;
+    /** Plan 8C/0019:揭示速率上限(glyph/秒);≤0 = 不限速。 */
+    set_reveal_cps(cps: number): void;
+    /** 0019:揭示放慢因子 `[0.01,1.0]`(越小越慢)。 */
+    set_reveal_slow(slow: number): void;
+    /** Plan 19 P2 虚拟化开关(false = 全程 Hot,P2 对照/兜底)。 */
+    set_virtualize(on: boolean): void;
+    /** Plan 8B/0019:表格揭示风格(0=逐字 / 1=行框 / 2=整表骨架先行)。 */
+    set_table_reveal_style(style: number): void;
+    /** 调试播放器:揭示动画跳到时间轴 `targetMs`(确定性重跑到该时刻)。 */
+    seek_reveal(targetMs: number): void;
+    /** 调试:清 spawn,按当前风格/速度从头重揭一遍(所见即所设)。 */
+    restart_reveal(): void;
+    /** 调试播放器:按显式 `dtMs` 推进一帧(不走墙钟;配 set_paused 由 JS 掌钟)。 */
+    tick(dtMs: number): void;
   }
 }
