@@ -843,6 +843,20 @@ impl ChatCanvas {
         }
     }
 
+    /// 设运行时主题(Plan 26①):JSON 全量/局部 token 覆盖(缺字段用默认补),如
+    /// `{"selection":[1,0,0,0.5],"code_bg":[...]}`。**无需重排/reload**:颜色不进排版缓存,
+    /// 下一帧即生效。非法 JSON → warn + 忽略(不破坏现主题)。
+    pub fn set_theme(&self, json: &str) {
+        match infinite_chat_core::Theme::from_json(json) {
+            Ok(t) => {
+                if let Some(app) = self.state.borrow_mut().as_mut() {
+                    app.engine.set_theme(t);
+                }
+            }
+            Err(e) => tracing::warn!(target: "M13", error = %e, "set_theme JSON 非法,忽略"),
+        }
+    }
+
     /// 设表格面板渲染样式(web 层 style 面板实时调;Plan 6 / 0018)。**无需重排/reload**:
     /// `block_decorations` 每帧读 → 下一帧即生效。`cfg` 为对象,字段缺省则保留默认:
     /// `{ lineColor:[r,g,b,a], headerFill:[r,g,b,a], aoColor:[r,g,b], lineW, ao, aoWidth, radius }`

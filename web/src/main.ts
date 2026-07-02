@@ -4,26 +4,9 @@
 //   npm run dev                         # 合成流演示(Phase C)
 //   open http://localhost:5173/?server=http://localhost:4096&session=<id>   # 接真实 opencode(Phase D)
 
-import init, { ChatCanvas } from "../pkg/infinite_chat_wasm.js";
-import { layout, measure, FONT_SIZE } from "./layout-bridge";
-import { rasterize } from "./glyph-raster";
-import { attachCanvasInput } from "./input";
+import { bootCanvas } from "./boot";
 
 async function main() {
-  const canvas = document.getElementById("chat") as HTMLCanvasElement;
-  // HiDPI:后备缓冲 = CSS 尺寸 × devicePixelRatio(设备像素),CSS 显示尺寸仍是 100vw/vh,
-  // 浏览器据此 1:1 映射物理像素 → 文字锐利。排版/光栅化同样按设备像素(见 layout-bridge)。
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || window.innerWidth;
-  const cssH = canvas.clientHeight || window.innerHeight;
-  canvas.width = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
-
-  const wasmModule = await init(); // Plan 18:`wasmModule.memory` 读 wasm 线性内存(?bench)
-
-  // 正文用浏览器系统字体栈(零打包,见 layout-bridge SANS/MONO),无需加载自带字体。
-  // 固定字形的"文字当图片"走离线 MSDF(0011 §3.5 / TODO K′)。
-
   const params = new URLSearchParams(location.search);
   const serverUrl = params.get("server") ?? undefined;
   const sessionId = params.get("session") ?? undefined;
@@ -67,9 +50,8 @@ async function main() {
     }
   }
 
-  const chat = new ChatCanvas(canvas, { layout, measure, rasterize, serverUrl, sessionId, replay });
-  chat.set_math_em(FONT_SIZE); // 数学字号 = 正文字号(含 DPR);显示数学 ×1.3 = H3(Plan 12)
-  chat.start();
+  // Plan 25:共享装配(canvas/wasm/引擎/渲染泵/字体)抽到 boot.ts,main 与 /chat 复用。
+  const { chat, wasmModule } = await bootCanvas({ replay, serverUrl, sessionId });
 
   // Plan 22 P0:服务端实时流由 TS SSE 客户端接(韧性在 TS:重连/心跳/僵尸/cache-bust),每条
   // data 原文 → chat.push_event(解码在 Rust)。引擎侧用空 QueueConnection,不再在 Rust 内开 SSE。
@@ -96,35 +78,19 @@ async function main() {
       parent: document.body,
     });
   }
-  // 画布输入(滚轮/触摸板两指滚动/捏合缩放/拖拽平移)在 web 层挂(Plan 6)。
-  attachCanvasInput(canvas, chat);
-  // 图片嵌入(Plan 14 ③):每 ~120ms 轮询待解码图 → 浏览器解码/上传(重活在 JS,core 持元数据)。
+  // ?theme=<name>(Plan 26①):载 themes/<name>.json → set_theme(下一帧生效,不重排)。
   {
-    const { pumpImageLoads } = await import("./image-loader");
-    // Plan 16 §2.7:代码块 copy 图标改走程序化 ShaderBox(不再预载 copy.svg 纹理)。
-    setInterval(() => pumpImageLoads(chat), 120);
+    const themeName = params.get("theme");
+    if (themeName) {
+      try {
+        const r = await fetch(`${import.meta.env.BASE_URL}themes/${themeName}.json`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        chat.set_theme(await r.text());
+      } catch (e) {
+        console.warn(`[theme] 载入失败,用默认: ${themeName}`, e);
+      }
+    }
   }
-  // 动图 DOM overlay(Plan 14 ⑥)+ 复制按钮(Plan 21 P1)+ 文本层(Plan 21 P2):每帧同步到相机位置。
-  {
-    const { pumpEmbedOverlay } = await import("./embed-overlay");
-    const { pumpCopyButtons } = await import("./copy-button");
-    const { pumpTextLayer, attachSelection } = await import("./text-layer");
-    const { mountFindBar } = await import("./find-bar");
-    const { pumpDock } = await import("./dock");
-    attachSelection(chat); // selectionchange → set_selection(节流 rAF)
-    mountFindBar(chat); // Plan 21 P3:Cmd+F 跨全历史查找
-    const tick = () => {
-      pumpEmbedOverlay(chat);
-      pumpCopyButtons(chat);
-      pumpTextLayer(chat, canvas);
-      pumpDock(chat); // Plan 22 P4:权限/反问 Dock(据会话态弹/收)
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }
-  // 保活:挂到 window,避免 chat 被 GC 释放(否则帧循环/监听回调会悬空)。
-  (window as unknown as { __chat: unknown }).__chat = chat;
-
   // ?debug:挂调试面板(Plan 4C2)。按需加载,prod 零成本。
   if (params.has("debug")) {
     // 右上角竖排容器:debug 在上、style 在下,收起/展开自动重排(Plan 6)。
@@ -147,17 +113,6 @@ async function main() {
     const b = import.meta.env.BASE_URL;
     const msdfBase = params.has("msdf") ? b + "fonts/lxgw-msdf" : b + "fonts/ascii-msdf";
     loadMsdf(chat, msdfBase).catch((e) => console.warn("[msdf] load skipped (回退 TinySDF)", e));
-  }
-  // 数学字体(Plan 12 / 0013 §8):异步预载(非阻塞)。① **KaTeX MSDF atlas**(相位④)→ 数学字形
-  // 任意缩放锐利无锯齿(resolve 对数学角色查合成键 MSDF);② KaTeX woff2 作 MSDF 未命中字的 TinySDF
-  // 回退。两者就绪后 refresh_fonts 让已出现公式重栅。
-  {
-    const { loadMathMsdf } = await import("./msdf");
-    const { loadMathFonts } = await import("./math-fonts");
-    Promise.all([
-      loadMathMsdf(chat).catch((e) => console.error("[math-msdf] load failed", e)),
-      loadMathFonts().catch((e) => console.error("[math-fonts] load failed", e)),
-    ]).then(() => chat.refresh_fonts());
   }
   // ?verify:开自绘几何标尺(复用 4C3 块/视口框,Plan 5D3),配 ?replay 看流式无跳变。
   // 引擎异步就绪,轮询几次让开关生效后停。
@@ -269,6 +224,7 @@ function mountDemoBar() {
     `<b style="color:#fff;letter-spacing:.3px">infinite-chat</b>` +
     `<span style="opacity:.6">intro film · SDF / 流式 / 无限画布</span>` +
     `<span style="flex:1"></span>` +
+    link("💬 完整对话", `${base}chat/`) +
     link("🎨 Icon Gallery", `${base}gallery.html`) +
     link("📄 Markdown demo", `?replay=showcase&speed=0.5`) +
     link("GitHub", "https://github.com/OhBonsai/infinite-chat");

@@ -13,6 +13,16 @@ export default defineConfig({
   // 运行时 fetch(cases/fonts)统一用 import.meta.env.BASE_URL(= 此 base),见 replay/msdf/math-fonts。
   base: process.env.PAGES_BASE || "/",
   plugins: [wasm(), topLevelAwait()],
+  // Plan 25:多页 —— 主 harness(/)+ 剧本回放页(/chat/)。dev 下 vite 按路径直接服务
+  // chat/index.html;build 产 dist/chat/index.html(Pages 子路径 /infinite-chat/chat/)。
+  build: {
+    rollupOptions: {
+      input: {
+        main: new URL("index.html", import.meta.url).pathname,
+        chat: new URL("chat/index.html", import.meta.url).pathname,
+      },
+    },
+  },
   optimizeDeps: {
     exclude: ["pkg", "infinite-chat-wasm"],
   },

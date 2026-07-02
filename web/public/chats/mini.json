@@ -1,0 +1,21 @@
+{
+  "meta": { "title": "mini(PR-B 端到端)", "version": 1 },
+  "track": [
+    { "dt": 400, "user": { "text": "帮我看看这个仓库的测试怎么跑?", "cps": 16, "holdMs": 400 } },
+
+    { "dt": 900, "event": { "type": "message.updated", "properties": { "info": { "id": "mu1", "role": "user", "sessionID": "chat" } } } },
+    { "dt": 60, "event": { "type": "message.part.updated", "properties": { "part": { "type": "text", "id": "pu1", "messageID": "mu1", "sessionID": "chat", "text": "帮我看看这个仓库的测试怎么跑?" }, "time": 1 } } },
+
+    { "dt": 400, "event": { "type": "session.status", "properties": { "status": { "type": "busy" } } } },
+    { "dt": 300, "event": { "type": "message.updated", "properties": { "info": { "id": "ma1", "role": "assistant", "sessionID": "chat" } } } },
+    { "dt": 200, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa1", "field": "text", "delta": "好的,我先看一下测试入口。" } } },
+
+    { "dt": 700, "event": { "type": "permission.asked", "properties": { "sessionID": "chat" } } },
+    { "dt": 1200, "dock": "allow" },
+
+    { "dt": 500, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "pt1", "messageID": "ma1", "sessionID": "chat", "tool": "bash", "state": { "status": "completed", "input": { "cmd": "node test/run.mjs --suite unit" }, "output": "8 passed" } }, "time": 2 } } },
+
+    { "dt": 800, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa2", "field": "text", "delta": "统一入口是 `node test/run.mjs`,单元层 8 个用例全绿。" } } },
+    { "dt": 600, "event": { "type": "session.status", "properties": { "status": { "type": "idle" } } } }
+  ]
+}

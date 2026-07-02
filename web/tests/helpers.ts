@@ -14,6 +14,8 @@ export interface ChatHandle {
   visible_turns(): string;
   visible_text_runs(): string;
   stats(): Record<string, number>;
+  // Plan 26①:运行时主题。
+  set_theme(json: string): void;
   // Plan 22:事件注入 + 会话态 + Dock 应答。
   push_event(raw: string): void;
   session_status(): string;

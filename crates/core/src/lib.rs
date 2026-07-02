@@ -80,3 +80,4 @@ pub use store::{Role, Store};
 pub use support::{
     push_event, CollectSink, EventQueue, MonospaceLayout, NullSink, QueueConnection,
 };
+pub use theme::Theme;

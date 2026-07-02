@@ -12,11 +12,16 @@ interface DockChat {
 
 let dock: HTMLDivElement | null = null;
 let shownFor = ""; // 当前已弹的阻塞态(避免每帧重建)
+let prevFocus: HTMLElement | null = null; // Plan 26②:打开前的焦点,关闭时还原
 
 function ensureDock(): HTMLDivElement {
   if (dock) return dock;
   dock = document.createElement("div");
   dock.className = "session-dock";
+  // Plan 26②:阻塞性对话 → alertdialog(读屏立即感知);焦点进出由 pumpDock 管理。
+  dock.setAttribute("role", "alertdialog");
+  dock.setAttribute("aria-modal", "true");
+  dock.setAttribute("aria-label", "需要确认");
   dock.style.cssText =
     "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9997;display:none;" +
     "gap:10px;align-items:center;background:rgba(28,31,40,0.96);border:1px solid rgba(255,255,255,0.18);" +
@@ -61,12 +66,17 @@ export function pumpDock(chat: DockChat): void {
   const status = chat.session_status();
   const want = status.startsWith("blocked:") ? status : "";
   if (want === shownFor) return; // 态未变 → 不重建
+  const wasOpen = shownFor !== "";
   shownFor = want;
-  if (want === "blocked:permission") {
-    render(chat, "permission");
-  } else if (want === "blocked:question") {
-    render(chat, "question");
+  if (want === "blocked:permission" || want === "blocked:question") {
+    // Plan 26②:记录当前焦点 → 弹 Dock → 焦点入首按钮(键盘/读屏直达)。
+    if (!wasOpen) prevFocus = document.activeElement as HTMLElement | null;
+    render(chat, want === "blocked:permission" ? "permission" : "question");
+    dock?.querySelector<HTMLButtonElement>("button")?.focus();
   } else if (dock) {
     dock.style.display = "none";
+    // 焦点还原到打开前位置(还在文档里才还原)。
+    if (wasOpen && prevFocus?.isConnected) prevFocus.focus();
+    prevFocus = null;
   }
 }

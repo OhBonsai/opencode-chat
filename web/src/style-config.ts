@@ -21,6 +21,26 @@ export interface TableRender {
   radius: number; // 圆角 px
 }
 
+/// 主题 token **局部覆盖**(Plan 26①):键 = core `Theme` 字段名(snake_case),值 = RGBA/RGB
+/// 数组。空对象 = 默认主题。整包 JSON 化后经 wasm `set_theme` 灌入(缺字段 core 用默认补)。
+export type ThemeOverrides = Record<string, number[]>;
+
+/// 面板可调的主题 token(名, 标签, 默认值)。默认值镜像 core `Theme::default()`(跨语言令牌表,
+/// 改 core 默认需同步;alert 三元组走 JSON/URL,不进面板)。
+export const THEME_TOKENS: [string, string, RGBA][] = [
+  ["code_bg", "code bg", [0.1, 0.11, 0.16, 0.75]],
+  ["code_chip", "code chip", [0.18, 0.19, 0.26, 0.7]],
+  ["code_border", "code border", [0.32, 0.36, 0.46, 0.85]],
+  ["quote_bar", "quote bar", [0.42, 0.46, 0.56, 0.9]],
+  ["head_rule", "head rule", [0.24, 0.27, 0.33, 0.9]],
+  ["hr_rule", "hr rule", [0.82, 0.86, 0.94, 1.0]],
+  ["selection", "selection", [0.26, 0.45, 0.92, 0.4]],
+  ["card_bg", "card bg", [0.14, 0.16, 0.21, 0.55]],
+  ["card_border", "card border", [0.3, 0.34, 0.44, 0.7]],
+  ["diff_add_bg", "diff add", [0.22, 0.45, 0.27, 0.35]],
+  ["diff_del_bg", "diff del", [0.5, 0.22, 0.24, 0.35]],
+];
+
 export interface StyleConfig {
   table: {
     /// 单元格文字在行内的垂直对齐(多行/不等高行显著;单行行内即整体上/中/下)。**布局**(走重排)。
@@ -30,12 +50,14 @@ export interface StyleConfig {
   };
   /// 表格面板**渲染**样式(颜色/AO/线宽/圆角)。走 wasm `set_table_style`,实时、不重排。
   tableRender: TableRender;
+  /// 主题 token 覆盖(Plan 26①)。走 wasm `set_theme`,实时、不重排。
+  theme: ThemeOverrides;
   // 占位:后续元素分组(list 标记/缩进、div 容器内边距…)接到这里,面板自动出节。
 }
 
 const DEFAULT: StyleConfig = {
   table: { vAlign: "center", hAlign: "auto" },
-  // 默认 = core `TableStyle::default()`(theme::TABLE_RULE / TABLE_HEADER_BG)。
+  // 默认 = core `TableStyle::default()`(theme table_rule / table_header_bg)。
   tableRender: {
     lineColor: [0.26, 0.29, 0.36, 0.9],
     headerFill: [0.16, 0.18, 0.24, 0.6],
@@ -45,6 +67,7 @@ const DEFAULT: StyleConfig = {
     aoWidth: 10,
     radius: 4,
   },
+  theme: {},
 };
 
 const KEY = "infinite-chat.styleConfig";
@@ -63,6 +86,7 @@ function load(): StyleConfig {
     return {
       table: { ...DEFAULT.table, ...(c.table ?? {}) },
       tableRender: { ...DEFAULT.tableRender, ...(c.tableRender ?? {}) },
+      theme: { ...(c.theme ?? {}) },
     };
   } catch {
     return clone(DEFAULT);

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>infinite-chat · 完整对话</title>
+    <style>
+      :root { --input-h: 0px; }
+      html, body { margin: 0; height: 100%; background: #0d0f17; }
+      /* 画布只占输入框上方(同主页):高度扣掉输入框实测高(--input-h)。 */
+      #chat { display: block; width: 100vw; height: calc(100vh - var(--input-h)); }
+    </style>
+  </head>
+  <body>
+    <canvas id="chat"></canvas>
+    <script type="module" src="/src/chat/main.ts"></script>
+  </body>
+</html>

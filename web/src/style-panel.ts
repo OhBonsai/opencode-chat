@@ -18,6 +18,7 @@ import { loadMsdf, msdfLoaded } from "./msdf";
 import {
   getStyleConfig,
   setStyleConfig,
+  THEME_TOKENS,
   type HAlign,
   type RGB,
   type RGBA,
@@ -35,8 +36,11 @@ export function mountStylePanel(chat: ChatCanvas, parent: HTMLElement = document
   const relayout = () => chat.refresh_fonts();
   // ② 渲染类:推 wasm,块装饰每帧读 → 下帧即生效。
   const pushRender = () => chat.set_table_style({ ...getStyleConfig().tableRender });
-  // 挂载即把(可能来自 localStorage 的)渲染样式推一次,确保与引擎默认对齐。
+  // ③ 主题类(Plan 26①):token 覆盖 → `chat.set_theme(json)`,装饰 emit 每帧读 → 下帧即生效。
+  const pushTheme = () => chat.set_theme(JSON.stringify(getStyleConfig().theme));
+  // 挂载即把(可能来自 localStorage 的)渲染样式/主题覆盖各推一次,确保与引擎默认对齐。
   pushRender();
+  if (Object.keys(getStyleConfig().theme).length) pushTheme();
 
   const panel = el(
     "div",
@@ -86,6 +90,14 @@ export function mountStylePanel(chat: ChatCanvas, parent: HTMLElement = document
     pushRender();
   };
   const tr = () => getStyleConfig().tableRender;
+  // —— Theme(走 set_theme,实时;Plan 26①)——
+  const setThemeToken = (name: string, rgba: RGBA) => {
+    const c = getStyleConfig();
+    setStyleConfig({ ...c, theme: { ...c.theme, [name]: rgba } });
+    pushTheme();
+  };
+  const themeGet = (name: string, dflt: RGBA): RGBA =>
+    (getStyleConfig().theme[name] as RGBA | undefined) ?? dflt;
 
   // —— Render · 字体 / 字形源(原 debug 面板,移入 style)——
   // 字体切换:换预设 → bump atlas 代 + 重排(0015 §2.5)。
@@ -108,6 +120,12 @@ export function mountStylePanel(chat: ChatCanvas, parent: HTMLElement = document
   };
 
   body.append(
+    section(
+      "Theme",
+      THEME_TOKENS.map(([name, label, dflt]) =>
+        colorField(label, () => themeGet(name, dflt), (rgba) => setThemeToken(name, rgba)),
+      ),
+    ),
     section("Table · layout", [
       selectField(
         "text align ↕",

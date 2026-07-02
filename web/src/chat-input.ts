@@ -32,20 +32,13 @@ export async function ensureSession(serverUrl: string, sessionId?: string): Prom
   return j.id;
 }
 
-/** 挂载输入框到 `parent`。返回卸载函数(移除 DOM)。`sessionId` 可空 → 首次发送时惰性建会话
- * (`ensureSession`),故输入框**立即可见**,不依赖服务端/会话先就绪(无服务端则发送时友好报错)。 */
-/** 跨重载暂存待发消息的 key(画布未连服务端时,重连后自动续发)。 */
-const PENDING_KEY = "ic_pending_send";
-
-export function mountChatInput(o: {
-  serverUrl: string;
-  sessionId?: string;
-  model: ModelRef;
-  /** 画布是否已连同一服务端的 SSE(= 页面带 `?server=`)。false → 发送前先重连(否则回包无处渲染)。 */
-  canvasLive: boolean;
-  parent: HTMLElement;
-}): () => void {
-  let session = o.sessionId; // 惰性:首次发送时建
+/** 共享 DOM 构造(真组件真样式):bar + textarea + 发送按钮。真发送(`mountChatInput`)与
+ * 剧本模式(`mountScriptedInput`,Plan 25)共用同一份样式/结构 —— 拒绝仿品。 */
+function buildInputDom(): {
+  bar: HTMLDivElement;
+  ta: HTMLTextAreaElement;
+  btn: HTMLButtonElement;
+} {
   const bar = document.createElement("div");
   bar.style.cssText =
     "position:fixed;left:0;right:0;bottom:0;z-index:9000;display:flex;gap:8px;align-items:flex-end;" +
@@ -65,6 +58,50 @@ export function mountChatInput(o: {
   btn.style.cssText =
     "padding:8px 16px;border-radius:8px;border:none;cursor:pointer;color:#fff;" +
     "background:#3b6fe0;font:600 14px system-ui,sans-serif";
+
+  bar.appendChild(ta);
+  bar.appendChild(btn);
+  return { bar, ta, btn };
+}
+
+/** 把输入框实测高写入 `--input-h`(画布据此扣高)+ 高度真变时派发 resize(wasm 重配 surface)。
+ * 返回清理函数。真发送与剧本模式共用。 */
+function attachInsetSync(bar: HTMLDivElement): () => void {
+  let lastBarH = -1;
+  const syncInset = () => {
+    const h = bar.offsetHeight;
+    document.documentElement.style.setProperty("--input-h", `${h}px`);
+    if (h === lastBarH) return;
+    lastBarH = h;
+    window.dispatchEvent(new Event("resize"));
+  };
+  const ro = new ResizeObserver(syncInset);
+  ro.observe(bar);
+  syncInset();
+  // wasm 的 resize 监听在 GPU init 末尾才挂,可能晚于此刻 → 多补几拍确保后备缓冲重配。
+  for (const d of [300, 1200]) setTimeout(() => window.dispatchEvent(new Event("resize")), d);
+  return () => {
+    ro.disconnect();
+    document.documentElement.style.setProperty("--input-h", "0px");
+    window.dispatchEvent(new Event("resize"));
+  };
+}
+
+/** 挂载输入框到 `parent`。返回卸载函数(移除 DOM)。`sessionId` 可空 → 首次发送时惰性建会话
+ * (`ensureSession`),故输入框**立即可见**,不依赖服务端/会话先就绪(无服务端则发送时友好报错)。 */
+/** 跨重载暂存待发消息的 key(画布未连服务端时,重连后自动续发)。 */
+const PENDING_KEY = "ic_pending_send";
+
+export function mountChatInput(o: {
+  serverUrl: string;
+  sessionId?: string;
+  model: ModelRef;
+  /** 画布是否已连同一服务端的 SSE(= 页面带 `?server=`)。false → 发送前先重连(否则回包无处渲染)。 */
+  canvasLive: boolean;
+  parent: HTMLElement;
+}): () => void {
+  let session = o.sessionId; // 惰性:首次发送时建
+  const { bar, ta, btn } = buildInputDom();
 
   const err = document.createElement("div");
   err.style.cssText =
@@ -162,26 +199,10 @@ export function mountChatInput(o: {
   });
   btn.addEventListener("click", () => void send());
 
-  bar.appendChild(ta);
-  bar.appendChild(btn);
   o.parent.appendChild(bar);
   o.parent.appendChild(err);
 
-  // 把输入框实测高写入 `--input-h`(画布据此 CSS 扣高,不被遮挡);高度变(多行展开)→ 触发 resize
-  // 让 wasm 重配 surface/视口。CSS 变量每次都更新;resize 只在高度真变时派发,避免打字时每帧重配。
-  let lastBarH = -1;
-  const syncInset = () => {
-    const h = bar.offsetHeight;
-    document.documentElement.style.setProperty("--input-h", `${h}px`);
-    if (h === lastBarH) return;
-    lastBarH = h;
-    window.dispatchEvent(new Event("resize"));
-  };
-  const ro = new ResizeObserver(syncInset);
-  ro.observe(bar);
-  syncInset();
-  // wasm 的 resize 监听在 GPU init 末尾才挂,可能晚于此刻挂载 → 多补几拍 resize 确保后备缓冲重配。
-  for (const d of [300, 1200]) setTimeout(() => window.dispatchEvent(new Event("resize")), d);
+  const detachInset = attachInsetSync(bar);
 
   // 重连续发:上一步因画布未连而重载到 ?server= 后,画布已连 SSE → 取出暂存消息自动发出。
   if (o.canvasLive) {
@@ -195,10 +216,83 @@ export function mountChatInput(o: {
   }
 
   return () => {
-    ro.disconnect();
-    document.documentElement.style.setProperty("--input-h", "0px");
-    window.dispatchEvent(new Event("resize"));
+    detachInset();
     o.parent.removeChild(bar);
     o.parent.removeChild(err);
+  };
+}
+
+// ───────────────────────── 剧本模式(Plan 25 PR-B) ─────────────────────────
+
+/** 剧本模式输入框句柄:player 的 driver 用它演"用户在打字并发送"。 */
+export interface ScriptedInput {
+  /** 逐字打出 `text`(`cps` 字/秒);`instant` = 秒填(seek 快放)。返回打完的 Promise。 */
+  typeText(text: string, cps: number, instant?: boolean): Promise<void>;
+  /** 按发送态样式闪一下按钮 → 清空输入框(发送本身不产画布内容;气泡走剧本事件)。 */
+  flashSend(): void;
+  unmount(): void;
+}
+
+/** 挂载**剧本模式**输入框(Plan 25):同一份真组件真样式,但**禁网络**(不 POST、不建会话)、
+ * 观看者不可编辑(readOnly)。真发送路径(`mountChatInput`)零改动、零影响。 */
+export function mountScriptedInput(parent: HTMLElement): ScriptedInput {
+  const { bar, ta, btn } = buildInputDom();
+  ta.readOnly = true; // 纯自动播片:观看者不打字
+  ta.placeholder = "";
+  parent.appendChild(bar);
+  const detachInset = attachInsetSync(bar);
+
+  const autosize = () => {
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  };
+
+  let typeTimer = 0;
+  const typeText = (text: string, cps: number, instant = false): Promise<void> => {
+    window.clearInterval(typeTimer);
+    if (instant || cps <= 0) {
+      ta.value = text;
+      autosize();
+      return Promise.resolve();
+    }
+    // 逐字(码点)填入;光标 = textarea 原生 caret(focus 即见)。
+    const chars = [...text];
+    ta.value = "";
+    ta.focus();
+    let i = 0;
+    return new Promise((resolve) => {
+      typeTimer = window.setInterval(() => {
+        i += 1;
+        ta.value = chars.slice(0, i).join("");
+        autosize();
+        if (i >= chars.length) {
+          window.clearInterval(typeTimer);
+          resolve();
+        }
+      }, 1000 / cps);
+    });
+  };
+
+  const flashSend = () => {
+    // 按下态:短暂提亮 + 微缩,再复原并清空 —— 与真发送同一颗按钮同一套样式。
+    const prev = btn.style.background;
+    btn.style.background = "#5a8bff";
+    btn.style.transform = "scale(0.94)";
+    window.setTimeout(() => {
+      btn.style.background = prev;
+      btn.style.transform = "";
+      ta.value = "";
+      autosize();
+    }, 160);
+  };
+
+  return {
+    typeText,
+    flashSend,
+    unmount: () => {
+      window.clearInterval(typeTimer);
+      detachInset();
+      parent.removeChild(bar);
+    },
   };
 }

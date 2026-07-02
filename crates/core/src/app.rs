@@ -50,12 +50,12 @@ fn flush_diff_band(band: Option<([f32; 4], f32, f32)>, x: f32, w: f32, out: &mut
     }
 }
 
-fn flush_chip(chip: Option<[f32; 4]>, out: &mut Vec<FrameRect>) {
+fn flush_chip(chip: Option<[f32; 4]>, color: [f32; 4], out: &mut Vec<FrameRect>) {
     if let Some([x0, x1, y0, y1]) = chip {
         out.push(FrameRect {
             pos: [x0 - 2.0, y0 - 1.0],
             size: [(x1 - x0) + 4.0, (y1 - y0) + 2.0],
-            color: theme::CODE_CHIP,
+            color,
             radius: 3.0,
             stroke: 0.0,
         });
@@ -63,12 +63,12 @@ fn flush_chip(chip: Option<[f32; 4]>, out: &mut Vec<FrameRect>) {
 }
 
 /// 把累积的删除线段(`[x0,x1,y0,y1]`)推成字中线一条细线(A:`~~…~~`,表格内/正文通用)。
-fn flush_strike(seg: Option<[f32; 4]>, out: &mut Vec<FrameRect>) {
+fn flush_strike(seg: Option<[f32; 4]>, color: [f32; 4], out: &mut Vec<FrameRect>) {
     if let Some([x0, x1, y0, y1]) = seg {
         out.push(FrameRect {
             pos: [x0, (y0 + y1) * 0.5 - 0.75], // 字形垂直中点
             size: [x1 - x0, 1.5],
-            color: theme::STRIKE,
+            color,
             radius: 0.0,
             stroke: 0.0,
         });
@@ -186,8 +186,9 @@ fn enter_profile_id(role: u32, table: TableStyleKind) -> u32 {
 fn block_decorations(
     cache: &BlockCache,
     block_seq: u32,
-    origin: [f32; 2], // Plan 13:盒左上角 world 坐标(装饰随 view 盒平移)
-    box_w: f32,       // 盒宽(全宽装饰:代码底/引用条/分隔线/表头线锚它,非整窗宽)
+    origin: [f32; 2],  // Plan 13:盒左上角 world 坐标(装饰随 view 盒平移)
+    box_w: f32,        // 盒宽(全宽装饰:代码底/引用条/分隔线/表头线锚它,非整窗宽)
+    th: &theme::Theme, // Plan 26①:运行时令牌(Engine 持,`set_theme` 下一帧生效)
     ts: &TableStyle,
     spawn: &[Option<f32>],
     reveal_kind: TableStyleKind,
@@ -222,14 +223,14 @@ fn block_decorations(
         out.push(FrameRect {
             pos,
             size,
-            color: theme::CARD_BG,
+            color: th.card_bg,
             radius: 8.0,
             stroke: 0.0,
         });
         out.push(FrameRect {
             pos,
             size,
-            color: theme::CARD_BORDER,
+            color: th.card_border,
             radius: 8.0,
             stroke: 1.0,
         });
@@ -240,9 +241,9 @@ fn block_decorations(
         let mut band: Option<(bool, f32, f32)> = None; // (is_add, y0, y1)
         let color_of = |is_add: bool| {
             if is_add {
-                theme::DIFF_ADD_BG
+                th.diff_add_bg
             } else {
-                theme::DIFF_DEL_BG
+                th.diff_del_bg
             }
         };
         for (j, p) in cache.placed.iter().enumerate() {
@@ -293,8 +294,8 @@ fn block_decorations(
         // 引用条)——否则行框/逐项揭示下,未揭 cell 的内联装饰会先于字显形(孤立色块/横线)。
         // 块级底/条因此只含已揭字 → 随揭示逐步长大(block 也 reveal)。未释放字打断连续段。
         if spawn.get(j).copied().flatten().is_none() {
-            flush_chip(chip.take(), out);
-            flush_strike(strike_seg.take(), out);
+            flush_chip(chip.take(), th.code_chip, out);
+            flush_strike(strike_seg.take(), th.strike, out);
             continue;
         }
         let (x0, y0) = (p.pos[0] + origin[0], p.pos[1] + origin[1]);
@@ -325,7 +326,7 @@ fn block_decorations(
             widgets.push(FrameWidget {
                 pos: [origin[0], mid - qh + 14.0], // 线接近 rule 行中线;猫向上延展
                 size: [box_w, qh],
-                color: theme::HR_RULE,
+                color: th.hr_rule,
                 params: [0.0, 0.0, 0.0, 0.0],
                 component: crate::frame::WIDGET_RULE_CAT,
             });
@@ -340,11 +341,7 @@ fn block_decorations(
             widgets.push(FrameWidget {
                 pos: [x0, by],
                 size: [side, side],
-                color: if checked {
-                    theme::TASK_DONE
-                } else {
-                    theme::TASK_BOX
-                },
+                color: if checked { th.task_done } else { th.task_box },
                 params: [side * 0.22, 1.6, if checked { 1.0 } else { 0.0 }, 0.0],
                 component: crate::frame::WIDGET_BOX,
             });
@@ -356,12 +353,12 @@ fn block_decorations(
                     chip = Some([c[0], x1, c[2].min(y0), c[3].max(y1)]);
                 }
                 _ => {
-                    flush_chip(chip, out);
+                    flush_chip(chip, th.code_chip, out);
                     chip = Some([x0, x1, y0, y1]);
                 }
             }
         } else if chip.is_some() {
-            flush_chip(chip, out);
+            flush_chip(chip, th.code_chip, out);
             chip = None;
         }
         // 删除线(A):连续 struck glyph 同行聚成一段,逐行/逐段 flush → 字中线一条细线。
@@ -371,24 +368,24 @@ fn block_decorations(
                     strike_seg = Some([c[0], x1, c[2].min(y0), c[3].max(y1)]);
                 }
                 _ => {
-                    flush_strike(strike_seg, out);
+                    flush_strike(strike_seg, th.strike, out);
                     strike_seg = Some([x0, x1, y0, y1]);
                 }
             }
         } else if strike_seg.is_some() {
-            flush_strike(strike_seg, out);
+            flush_strike(strike_seg, th.strike, out);
             strike_seg = None;
         }
     }
-    flush_chip(chip, out);
-    flush_strike(strike_seg, out);
+    flush_chip(chip, th.code_chip, out);
+    flush_strike(strike_seg, th.strike, out);
     if has_head_rule {
         // GitHub:H1/H2 底部细线,跨整块宽。
         let ry = origin[1] + cache.height - 2.0;
         out.push(FrameRect {
             pos: [origin[0], ry],
             size: [box_w, 1.5],
-            color: theme::HEAD_RULE,
+            color: th.head_rule,
             radius: 0.0,
             stroke: 0.0,
         });
@@ -408,7 +405,7 @@ fn block_decorations(
         out.push(FrameRect {
             pos: bg_pos,
             size: bg_size,
-            color: theme::CODE_BG,
+            color: th.code_bg,
             radius: 6.0,
             stroke: 0.0,
         });
@@ -416,7 +413,7 @@ fn block_decorations(
         out.push(FrameRect {
             pos: bg_pos,
             size: bg_size,
-            color: theme::CODE_BORDER,
+            color: th.code_border,
             radius: 6.0,
             stroke: 1.5,
         });
@@ -425,7 +422,7 @@ fn block_decorations(
             out.push(FrameRect {
                 pos: [origin[0] + cb.code_x0 - 4.0, origin[1] + cb.top_y - 2.0],
                 size: [1.0, win_h + 4.0],
-                color: theme::CODE_GUTTER_LINE,
+                color: th.code_gutter_line,
                 radius: 0.0,
                 stroke: 0.0,
             });
@@ -516,7 +513,7 @@ fn block_decorations(
             out.push(FrameRect {
                 pos: [origin[0], qy0 - 3.0],
                 size: [box_w, (qy1 - qy0) + 6.0],
-                color: theme::alert_bg(&alert_label),
+                color: th.alert_bg(&alert_label),
                 radius: 5.0,
                 stroke: 0.0,
             });
@@ -525,9 +522,9 @@ fn block_decorations(
             pos: [origin[0], qy0],
             size: [3.0, qy1 - qy0],
             color: if is_alert {
-                theme::alert_bar(&alert_label)
+                th.alert_bar(&alert_label)
             } else {
-                theme::QUOTE_BAR
+                th.quote_bar
             },
             radius: 0.0,
             stroke: 0.0,
@@ -731,10 +728,11 @@ fn line_runs(cache: &BlockCache, block: u32, origin: [f32; 2], out: &mut Vec<Vis
 /// `placed` 相对 + `origin`)。**逐行合并成圆角连续墨团**(P3:同行内被选字形并成一条圆角条,
 /// 比逐字形 rect 更像 macOS 选区;跨行各自一条 → 0025 §4 的 smin 跨行连体作进一步视觉细化)。
 /// 合并保"不漏选"(每个被选非零墨字形盒 ⊆ 其行墨团,N7)且不波及行内未选字(行内被选字形连续)。
-/// 颜色 [`theme::SELECTION`];进 `rects`(glyph 前绘制)→ 文字永在其上。
+/// 颜色 [`Theme::selection`](theme::Theme);进 `rects`(glyph 前绘制)→ 文字永在其上。
 fn push_selection_rects(
     cache: &BlockCache,
     origin: [f32; 2],
+    th: &theme::Theme,
     sel: &[(usize, usize, usize)],
     view: usize,
     out: &mut Vec<FrameRect>,
@@ -749,7 +747,7 @@ fn push_selection_rects(
             out.push(FrameRect {
                 pos: [x0, y0],
                 size: [x1 - x0, h],
-                color: crate::theme::SELECTION,
+                color: th.selection,
                 radius: (h * 0.28).min(6.0), // 圆角墨团(P3)
                 stroke: 0.0,
             });
@@ -933,8 +931,8 @@ pub struct TableStyle {
 impl Default for TableStyle {
     fn default() -> Self {
         Self {
-            line_color: theme::TABLE_RULE,
-            header_fill: theme::TABLE_HEADER_BG,
+            line_color: theme::Theme::default().table_rule,
+            header_fill: theme::Theme::default().table_header_bg,
             line_w: 1.0,
             ao: 0.12,
             ao_color: [1.0, 1.0, 1.0],
@@ -974,6 +972,9 @@ pub struct Engine<C: Connection, L: LayoutEngine, R: RenderSink> {
     last_stats: FrameStats,
     /// 表格面板可调渲染样式(web 层实时改;每帧读,见 [`TableStyle`])。
     table_style: TableStyle,
+    /// 运行时视觉令牌(Plan 26①):装饰/选区/调试色。`set_theme` 换主题,下一帧生效
+    /// (颜色不进排版缓存 → 不重排,与 0029 虚拟化正交)。默认 = 旧常量观感。
+    theme: theme::Theme,
     /// 揭示调度器(0019 §4.3):**唯一**揭示路径,定每个 display 字形的 `spawn_time`(限速 /
     /// 放慢 / 骨架先行),与 token 到达解耦。
     scheduler: RevealScheduler,
@@ -1049,6 +1050,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             turn: TurnTracker::new(),
             last_stats: FrameStats::default(),
             table_style: TableStyle::default(),
+            theme: theme::Theme::default(),
             scheduler: RevealScheduler::new(),
             math_em: 32.0,
             image_registry: std::collections::HashMap::new(),
@@ -1357,6 +1359,17 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
     /// 下一帧即生效。
     pub fn set_table_style(&mut self, s: TableStyle) {
         self.table_style = s;
+    }
+
+    /// 设运行时主题(Plan 26①:装饰/选区/调试全部视觉令牌)。**无需重排**:颜色不进排版缓存,
+    /// `build_frame` emit 时才解析 → 下一帧生效。默认主题 = 旧常量观感(零回归)。
+    pub fn set_theme(&mut self, t: theme::Theme) {
+        self.theme = t;
+    }
+
+    /// 当前主题(只读;测试/面板)。
+    pub fn theme(&self) -> &theme::Theme {
+        &self.theme
     }
 
     /// 设过滤目标 session(`?session=`);None 全渲染。
@@ -2356,6 +2369,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 id as u32, // block_seq:面板稳定身份高位(6D)
                 origin,    // Plan 13:盒 origin(x,y),装饰整体平移到盒位
                 box_w,     // 盒宽(全宽装饰:代码底/引用条/分隔线锚它,非整窗宽)
+                &self.theme,
                 &self.table_style,
                 &view.spawn,
                 reveal_kind,
@@ -2364,7 +2378,8 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 &mut widgets,
             ); // 4B/6 装饰 + Plan 11 复选框
                // Plan 21 P2:选区高亮(在装饰之后、glyph 之前入 rects → 压装饰底之上、文字之下)。
-            selection_rect_count += push_selection_rects(cache, origin, &selection, id, &mut rects);
+            selection_rect_count +=
+                push_selection_rects(cache, origin, &self.theme, &selection, id, &mut rects);
             let glyphs_before = glyphs.len();
             // 图片(Plan 14 ③):本块**已就绪**(Ready+纹理)嵌入 → (ei, 占位区间, 动图?, 自然尺寸, tex_id)。
             // 就绪即隐藏其 alt 占位字(图替之);未就绪(占位/加载/失败)则 alt 照常上屏(兜底)。
@@ -2676,7 +2691,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
                 rects.push(FrameRect {
                     pos: origin,
                     size: [box_w, h],
-                    color: theme::DBG_BLOCK,
+                    color: self.theme.dbg_block,
                     radius: 0.0,
                     stroke: 1.5,
                 });
@@ -2688,7 +2703,7 @@ impl<C: Connection, L: LayoutEngine, R: RenderSink> Engine<C, L, R> {
             rects.push(FrameRect {
                 pos: [visible.x, visible.y],
                 size: [visible.w, visible.h],
-                color: theme::DBG_VIEW,
+                color: self.theme.dbg_view,
                 radius: 0.0,
                 stroke: 2.0,
             });
@@ -2969,19 +2984,21 @@ mod tests {
         let f = eng.sink().last().expect("frame");
         let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
         assert!(
-            f.rects.iter().any(|r| near(r.color, crate::theme::CARD_BG)),
+            f.rects
+                .iter()
+                .any(|r| near(r.color, crate::theme::Theme::default().card_bg)),
             "tool 卡应发卡底面板"
         );
         assert!(
             f.rects
                 .iter()
-                .any(|r| near(r.color, crate::theme::DIFF_ADD_BG)),
+                .any(|r| near(r.color, crate::theme::Theme::default().diff_add_bg)),
             "diff 应发新增行底色带"
         );
         assert!(
             f.rects
                 .iter()
-                .any(|r| near(r.color, crate::theme::DIFF_DEL_BG)),
+                .any(|r| near(r.color, crate::theme::Theme::default().diff_del_bg)),
             "diff 应发删除行底色带"
         );
     }
@@ -3516,7 +3533,7 @@ mod tests {
         assert!(
             f.rects
                 .iter()
-                .any(|r| close(r.color, crate::theme::CODE_BG)),
+                .any(|r| close(r.color, crate::theme::Theme::default().code_bg)),
             "代码块应有底色 rect(随已揭字 reveal)"
         );
     }
@@ -3546,7 +3563,7 @@ mod tests {
                 assert!(
                     !f.rects
                         .iter()
-                        .any(|r| close(r.color, crate::theme::CODE_CHIP)),
+                        .any(|r| close(r.color, crate::theme::Theme::default().code_chip)),
                     "未揭行内码不应提前画 chip"
                 );
             }
@@ -3563,11 +3580,13 @@ mod tests {
         assert!(
             f.rects
                 .iter()
-                .any(|r| close(r.color, crate::theme::CODE_CHIP)),
+                .any(|r| close(r.color, crate::theme::Theme::default().code_chip)),
             "码全揭示后应有 chip"
         );
         assert!(
-            f.rects.iter().any(|r| close(r.color, crate::theme::STRIKE)),
+            f.rects
+                .iter()
+                .any(|r| close(r.color, crate::theme::Theme::default().strike)),
             "删除线全揭示后应有 strike"
         );
     }
@@ -4014,7 +4033,7 @@ mod tests {
         eng.prime_from_snapshot(snap);
         eng.frame(16.0);
         let f = eng.sink().last().expect("frame");
-        let warn = crate::theme::alert_bar("WARNING");
+        let warn = crate::theme::Theme::default().alert_bar("WARNING");
         let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
         assert!(
             f.rects.iter().any(|r| close(r.color, warn)),
@@ -4757,7 +4776,7 @@ mod tests {
     }
 
     fn selection_rects(f: &FrameData) -> Vec<&FrameRect> {
-        let sel = crate::theme::SELECTION;
+        let sel = crate::theme::Theme::default().selection;
         let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
         f.rects
             .iter()
@@ -4821,6 +4840,36 @@ mod tests {
             selection_rects(eng.sink().last().expect("f")).len(),
             0,
             "越界 view 无高亮"
+        );
+    }
+
+    /// Plan 26①:`set_theme` 不重排、下一帧生效 —— 自定义选区色即刻反映在选区 FrameRect;
+    /// 默认主题逐值 = 旧观感(theme.rs default_matches_legacy_palette + 视觉黄金帧共同守护)。
+    #[test]
+    fn theme_swap_changes_emitted_colors_next_frame() {
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let mut eng = revealed_engine("abcdef");
+        eng.set_selection(vec![(0, 0, 4)]);
+        eng.frame(16.0);
+        let sel_default = crate::theme::Theme::default().selection;
+        let f = eng.sink().last().expect("frame");
+        assert!(
+            f.rects.iter().any(|r| near(r.color, sel_default)),
+            "默认主题选区色应上屏"
+        );
+        // 局部覆盖 selection(serde 缺字段默认)→ 下一帧新色生效、旧色不残留。
+        let t: crate::theme::Theme =
+            serde_json::from_str(r#"{"selection":[1.0,0.0,0.0,0.5]}"#).expect("theme json");
+        eng.set_theme(t);
+        eng.frame(16.0);
+        let f = eng.sink().last().expect("frame");
+        assert!(
+            f.rects.iter().any(|r| near(r.color, [1.0, 0.0, 0.0, 0.5])),
+            "新主题选区色下一帧生效"
+        );
+        assert!(
+            !f.rects.iter().any(|r| near(r.color, sel_default)),
+            "旧选区色不残留"
         );
     }
 

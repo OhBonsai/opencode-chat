@@ -12,6 +12,15 @@
 interface TextHost {
   visible_text_runs(): string;
   set_selection(flat: Uint32Array): void;
+  /** Plan 26②:可见消息(角色/回合)→ ARIA article 语义。可选(旧调用方不带则退纯文本层)。 */
+  visible_turns?(): string;
+  /** Plan 26②:setsize 用总消息数(retainedViews 近似)。可选。 */
+  stats?(): Record<string, number>;
+}
+
+interface ScreenTurn {
+  id: number;
+  role: string;
 }
 
 interface ScreenRun {
@@ -53,6 +62,9 @@ function ensureLayer(canvas: HTMLCanvasElement): HTMLDivElement {
 
   layer = document.createElement("div");
   layer.className = "text-layer";
+  // Plan 26②(0030 步骤3):文本层即 ARIA 镜像 —— 容器 log,块 article(见 pump)。
+  layer.setAttribute("role", "log");
+  layer.setAttribute("aria-label", "对话");
   // 容器全屏但 pointer-events:none(空白落 canvas);仅 span auto。z 在画布上、复制按钮/面板下。
   layer.style.cssText =
     "position:fixed;inset:0;z-index:52;overflow:hidden;pointer-events:none;color-scheme:only light";
@@ -79,6 +91,23 @@ function ensureLayer(canvas: HTMLCanvasElement): HTMLDivElement {
   return layer;
 }
 
+const blockWraps = new Map<number, HTMLDivElement>(); // block → article 包裹(Plan 26② ARIA)
+
+/** 取/建某块的 `article` 包裹。**静态定位、无盒模型**(display:contents)→ span 的绝对坐标
+ * 仍锚 layer,视觉零影响;读屏得到"逐消息可导航"的结构(xterm.js 式虚拟列表)。 */
+function blockWrapOf(root: HTMLDivElement, block: number): HTMLDivElement {
+  let w = blockWraps.get(block);
+  if (!w) {
+    w = document.createElement("div");
+    w.style.display = "contents";
+    w.setAttribute("role", "article");
+    w.dataset.ablock = String(block);
+    root.appendChild(w);
+    blockWraps.set(block, w);
+  }
+  return w;
+}
+
 /** 一帧:把可见行同步成透明 span(main rAF 调,同 embed-overlay)。 */
 export function pumpTextLayer(host: TextHost, canvas: HTMLCanvasElement): void {
   let runs: ScreenRun[];
@@ -90,9 +119,11 @@ export function pumpTextLayer(host: TextHost, canvas: HTMLCanvasElement): void {
   const root = ensureLayer(canvas);
   const dpr = window.devicePixelRatio || 1;
   const seen = new Set<string>();
+  const seenBlocks = new Set<number>();
   for (const r of runs) {
     const key = `${r.block}:${r.char0}`;
     seen.add(key);
+    seenBlocks.add(r.block);
     let span = spans.get(key);
     if (!span) {
       span = document.createElement("span");
@@ -102,7 +133,7 @@ export function pumpTextLayer(host: TextHost, canvas: HTMLCanvasElement): void {
       span.style.cssText =
         "position:absolute;white-space:pre;color:transparent;user-select:text;-webkit-user-select:text;" +
         "pointer-events:auto;cursor:text;margin:0;padding:0;overflow:hidden";
-      root.appendChild(span);
+      blockWrapOf(root, r.block).appendChild(span);
       spans.set(key, span);
     }
     if (span.textContent !== r.text) span.textContent = r.text;
@@ -114,11 +145,33 @@ export function pumpTextLayer(host: TextHost, canvas: HTMLCanvasElement): void {
     span.style.fontSize = `${(r.h / dpr) * 0.82}px`;
     span.style.lineHeight = `${r.h / dpr}px`;
   }
-  // 回收滚出视口 / 卸载的行。
+  // 回收滚出视口 / 卸载的行 + 空块包裹。
   for (const [k, span] of spans) {
     if (!seen.has(k)) {
       span.remove();
       spans.delete(k);
+    }
+  }
+  for (const [b, w] of blockWraps) {
+    if (!seenBlocks.has(b)) {
+      w.remove();
+      blockWraps.delete(b);
+    }
+  }
+  // Plan 26②:块级 ARIA(角色描述 + posinset/setsize;虚拟化只镜像可见块,posinset 保序)。
+  if (host.visible_turns) {
+    try {
+      const turns = JSON.parse(host.visible_turns()) as ScreenTurn[];
+      const roleOf = new Map(turns.map((t) => [t.id, t.role]));
+      const setsize = host.stats?.().retainedViews ?? -1;
+      for (const [b, w] of blockWraps) {
+        const role = roleOf.get(b);
+        w.setAttribute("aria-roledescription", role === "user" ? "用户消息" : "助手消息");
+        w.setAttribute("aria-posinset", String(b + 1));
+        w.setAttribute("aria-setsize", String(setsize));
+      }
+    } catch {
+      /* 语义装饰失败不影响文本层本体 */
     }
   }
 }
