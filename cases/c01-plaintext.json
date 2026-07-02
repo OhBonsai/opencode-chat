@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "t": 0, "delta": "The quick brown fox " },
+    { "t": 120, "delta": "jumps over " },
+    { "t": 240, "delta": "the lazy dog, " },
+    { "t": 360, "delta": "again and again " },
+    { "t": 480, "delta": "until the line wraps around." }
+  ]
+}

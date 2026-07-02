@@ -1,0 +1,125 @@
+{
+  "_doc": "全 markdown 流式综合验收(Plan 11)。覆盖:H1–H6 / 粗斜删/行内码/链接/图片/行内数学 · 引用 + GitHub Alert · 有序·无序·嵌套列表 · 任务复选框(勾/未勾/混普通项)· 代码块(裸/带语言)· 表格(对齐+内联+CJK)· 分隔线 · 脚注 · 定义列表 · 显示数学 · CJK + emoji。transport 慢放看揭示与复选框随 cell 出现。 追加(Plan 15 代码块视口):长代码>6行行窗/tail/fade · 超宽行横滚 · 6行满窗边界 · 多语言(rust/python/js/bash)· 含空行计数。",
+  "steps": [
+    {
+      "t": 0,
+      "delta": "# 一级标题 H1\n"
+    },
+    {
+      "t": 250,
+      "delta": "## 二级标题 H2\n### 三级 H3\n#### 四级 H4\n##### 五级 H5\n###### 六级 H6\n\n"
+    },
+    {
+      "t": 700,
+      "delta": "这是一段**粗体**、*斜体*、***粗斜***、~~删除线~~,以及行内 `code` 和[链接](https://example.com)、![图片](pic.png)、行内数学 $E=mc^2$。\n\n"
+    },
+    {
+      "t": 1300,
+      "delta": "> 普通引用第一行\n> 第二行\n\n"
+    },
+    {
+      "t": 1700,
+      "delta": "> [!NOTE]\n> 提示型 Alert。\n\n"
+    },
+    {
+      "t": 2000,
+      "delta": "> [!WARNING]\n> 警告型 Alert。\n\n"
+    },
+    {
+      "t": 2400,
+      "delta": "无序列表:\n\n- 项目一\n- 项目二\n  - 嵌套 2.1\n  - 嵌套 2.2\n\n"
+    },
+    {
+      "t": 2900,
+      "delta": "有序列表:\n\n1. 第一\n2. 第二\n3. 第三\n\n"
+    },
+    {
+      "t": 3300,
+      "delta": "任务清单:\n\n- [x] 已完成项(框 + 对勾)\n- [x] 又一个完成项\n- [ ] 未完成项(空框)\n- [ ] 还没做\n\n"
+    },
+    {
+      "t": 3900,
+      "delta": "混在普通列表里:\n\n- 普通项(无框)\n- [x] 这条有框\n- 又一个普通项\n\n"
+    },
+    {
+      "t": 4400,
+      "delta": "裸代码块:\n\n```\nfn main() {\n    let x = 42;\n    println!(\"{x}\");\n}\n```\n\n"
+    },
+    {
+      "t": 4900,
+      "delta": "带语言:\n\n```rust\nfn typed() -> &'static str {\n    \"hello\"\n}\n```\n\n"
+    },
+    {
+      "t": 5400,
+      "delta": "表格:\n\n| 名称 | 年龄 | 备注 |\n|:-----|:----:|-----:|\n| Alice | 30 | **强调** |\n| 王小明 | 25 | `code` |\n\n"
+    },
+    {
+      "t": 6000,
+      "delta": "---\n\n"
+    },
+    {
+      "t": 6200,
+      "delta": "脚注示例[^1]。\n\n[^1]: 这是脚注定义。\n\n"
+    },
+    {
+      "t": 6600,
+      "delta": "术语\n: 定义内容。\n\n"
+    },
+    {
+      "t": 6900,
+      "delta": "行内数学:质能 $E=mc^2$,勾股 $a^2+b^2=c^2$,分数 $\\tfrac12$,希腊 $\\alpha\\beta\\gamma$。\n\n"
+    },
+    {
+      "t": 7300,
+      "delta": "显示数学(独占整行、居中、H3 字号):\n\n"
+    },
+    {
+      "t": 7600,
+      "delta": "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n"
+    },
+    {
+      "t": 8000,
+      "delta": "欧拉恒等式:\n\n$$e^{i\\pi} + 1 = 0$$\n\n"
+    },
+    {
+      "t": 8400,
+      "delta": "定积分:\n\n$$\\int_0^1 x^2\\,dx = \\tfrac13$$\n\n"
+    },
+    {
+      "t": 9000,
+      "delta": "中英混排 + emoji:渲染引擎 rendering engine 🚀✅🎯 完成。"
+    },
+    {
+      "t": 9600,
+      "delta": "长代码块(>6 行 → 行窗只露 6 行 + 上下淡 + 流式 tail):\n\n"
+    },
+    {
+      "t": 9900,
+      "delta": "```rust\nfn fib(n: u64) -> u64 {\n    let (mut a, mut b) = (0u64, 1u64);\n    for _ in 0..n {\n        let c = a + b;\n        a = b;\n        b = c;\n    }\n    a\n}\n\n// 空行也算一行(行窗计数)\nfn main() {\n    for i in 0..10 {\n        println!(\"fib({i}) = {}\", fib(i));\n    }\n}\n```\n\n"
+    },
+    {
+      "t": 11200,
+      "delta": "超宽行(横向滚动 + gutter 固定 + 长行不溢出):\n\n"
+    },
+    {
+      "t": 11500,
+      "delta": "```python\ndef very_wide_line():\n    data = {\"alpha\": 1, \"beta\": 2, \"gamma\": 3, \"delta\": 4, \"epsilon\": 5, \"zeta\": 6, \"eta\": 7, \"theta\": 8, \"iota\": 9, \"kappa\": 10}\n    return data\n```\n\n"
+    },
+    {
+      "t": 12200,
+      "delta": "恰好 6 行(满窗不滚、不淡)+ 多语言(JS):\n\n"
+    },
+    {
+      "t": 12500,
+      "delta": "```javascript\nconst sum = (xs) =>\n  xs.reduce((a, b) => a + b, 0);\nconst nums = [1, 2, 3, 4, 5];\nconsole.log(sum(nums));\n// 第六行刚好满窗\nexport { sum };\n```\n\n"
+    },
+    {
+      "t": 13400,
+      "delta": "短代码(≤6 行,无行窗无滚)+ 带空行 + shell:\n\n"
+    },
+    {
+      "t": 13700,
+      "delta": "```bash\n#!/usr/bin/env bash\n\nset -euo pipefail\necho \"hello, code viewport\"\n```\n"
+    }
+  ]
+}

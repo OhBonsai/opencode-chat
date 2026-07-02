@@ -1,0 +1,13 @@
+{
+  "_doc": "任务复选框(GFM `- [ ]`/`- [x]`,0026/Plan 11)。验:marker 渲染为 SDF 方框(未勾=空框、已勾=框+对勾),不显字面 [ ];框随其 cell 揭示出现;勾为绿、空框为中性灰。",
+  "steps": [
+    { "t": 0,    "delta": "## 任务清单\n\n" },
+    { "t": 300,  "delta": "- [x] 设计 base/markdown shader 分层\n" },
+    { "t": 800,  "delta": "- [x] 抽 base/sdf.wgsl 去重\n" },
+    { "t": 1300, "delta": "- [ ] 本地 wasm-pack build 验证 widget pipeline\n" },
+    { "t": 1800, "delta": "- [ ] 调框尺寸 / 勾选 morph 动画\n\n" },
+    { "t": 2300, "delta": "混在普通列表里:\n\n" },
+    { "t": 2600, "delta": "- 普通项(无复选框)\n" },
+    { "t": 3000, "delta": "- [x] 完成项\n" }
+  ]
+}

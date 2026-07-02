@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "t": 0, "delta": "> [!WARNING]\n" },
+    { "t": 160, "delta": "> be very " },
+    { "t": 320, "delta": "careful here\n" },
+    { "t": 480, "delta": "\n> a plain " },
+    { "t": 640, "delta": "quote line too." }
+  ]
+}

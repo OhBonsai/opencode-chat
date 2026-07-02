@@ -1,0 +1,35 @@
+{
+  "steps": [
+    { "t": 0,    "delta": "## 1 对齐 :-- :-: --:\n\n" },
+    { "t": 150,  "delta": "| Left | Center | Right |\n" },
+    { "t": 300,  "delta": "|:---|:--:|---:|\n" },
+    { "t": 450,  "delta": "| a | b | 1 |\n" },
+    { "t": 600,  "delta": "| longer text | mid | 1000000 |\n\n" },
+
+    { "t": 850,  "delta": "## 2 CJK / 全角\n\n" },
+    { "t": 1000, "delta": "| 语言 | 用途 | 年份 |\n" },
+    { "t": 1150, "delta": "|---|---|---|\n" },
+    { "t": 1300, "delta": "| Rust | 系统编程 | 2010 |\n" },
+    { "t": 1450, "delta": "| 中文很长的一格 | 表格对齐 | 二〇二六 |\n" },
+    { "t": 1600, "delta": "| 日本語 | ＡＢＣ全角 | 2024 |\n\n" },
+
+    { "t": 1850, "delta": "## 3 单元格内联格式\n\n" },
+    { "t": 2000, "delta": "| Feature | Status | Doc |\n" },
+    { "t": 2150, "delta": "|---|---|---|\n" },
+    { "t": 2300, "delta": "| **bold** | `done` | [link](https://example.com) |\n" },
+    { "t": 2450, "delta": "| *italic* | ~~old~~ | plain |\n\n" },
+
+    { "t": 2700, "delta": "## 4 残缺 / 多余单元格\n\n" },
+    { "t": 2850, "delta": "| A | B | C |\n" },
+    { "t": 3000, "delta": "|---|---|---|\n" },
+    { "t": 3150, "delta": "| 1 |  | 3 |\n" },
+    { "t": 3300, "delta": "| only-a |\n" },
+    { "t": 3450, "delta": "| x | y | z | extra-dropped |\n\n" },
+
+    { "t": 3700, "delta": "## 5 宽表 / 长内容\n\n" },
+    { "t": 3850, "delta": "| ID | Name | Email | Role | Team |\n" },
+    { "t": 4000, "delta": "|---|---|---|---|---|\n" },
+    { "t": 4150, "delta": "| 1 | Alice | alice@example.com | Admin | Platform |\n" },
+    { "t": 4300, "delta": "| 2 | Catherine | catherine.long@example.com | Maintainer | Infra |" }
+  ]
+}

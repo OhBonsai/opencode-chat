@@ -1,0 +1,59 @@
+{
+  "meta": {
+    "title": "修复登录超时 bug — 完整 agent 对话",
+    "version": 1,
+    "theme": "ocean"
+  },
+  "track": [
+    { "dt": 600, "user": { "text": "登录接口偶发超时,帮我查一下并修掉。", "cps": 15, "holdMs": 600 } },
+
+    { "dt": 1000, "event": { "type": "message.updated", "properties": { "info": { "id": "mu1", "role": "user", "sessionID": "chat" } } } },
+    { "dt": 60, "event": { "type": "message.part.updated", "properties": { "part": { "type": "text", "id": "pu1", "messageID": "mu1", "sessionID": "chat", "text": "登录接口偶发超时,帮我查一下并修掉。" }, "time": 1 } } },
+    { "dt": 300, "event": { "type": "session.status", "properties": { "status": { "type": "busy" } } } },
+
+    { "dt": 500, "event": { "type": "message.updated", "properties": { "info": { "id": "ma1", "role": "assistant", "sessionID": "chat" } } } },
+    { "dt": 200, "event": { "type": "message.part.updated", "properties": { "part": { "type": "reasoning", "id": "pr1", "messageID": "ma1", "sessionID": "chat", "text": "偶发超时通常是连接池耗尽或重试风暴。先看登录 handler 与超时配置,再决定改法。" }, "time": 2 } } },
+
+    { "dt": 1400, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa1", "field": "text", "delta": "我先梳理排查思路:\n\n" } } },
+    { "dt": 500, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa1", "field": "text", "delta": "- 复现路径:高并发下 `POST /login`\n- 嫌疑点:连接池上限、重试无退避\n\n" } } },
+    { "dt": 700, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa1", "field": "text", "delta": "| 指标 | 现状 | 期望 |\n|---|---|---|\n| p99 延迟 | 8s | <1s |\n| 超时率 | 2.3% | ~0 |\n\n" } } },
+    { "dt": 900, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa1", "field": "text", "delta": "先读一下登录模块的代码。\n" } } },
+
+    { "dt": 600, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "t-read", "messageID": "ma1", "sessionID": "chat", "tool": "read", "state": { "status": "pending", "input": { "path": "src/auth/login.ts" } } }, "time": 3 } } },
+    { "dt": 500, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "t-read", "messageID": "ma1", "sessionID": "chat", "tool": "read", "state": { "status": "running", "input": { "path": "src/auth/login.ts" } } }, "time": 4 } } },
+    { "dt": 900, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "t-read", "messageID": "ma1", "sessionID": "chat", "tool": "read", "state": { "status": "completed", "input": { "path": "src/auth/login.ts" }, "output": "const TIMEOUT = 1000; // 重试 5 次,无退避\nfor (let i = 0; i < 5; i++) { await fetchToken({ timeout: TIMEOUT }); }" } }, "time": 5 } } },
+
+    { "dt": 1000, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa2", "field": "text", "delta": "找到了:重试 5 次且**无退避**,压力下会放大成风暴。改成指数退避 + 上限 3 次。需要写文件权限。\n" } } },
+
+    { "dt": 800, "event": { "type": "permission.asked", "properties": { "sessionID": "chat", "permissionID": "perm-edit" } } },
+    { "dt": 1600, "dock": "allow" },
+
+    { "dt": 700, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "t-edit", "messageID": "ma1", "sessionID": "chat", "tool": "edit", "state": { "status": "completed", "input": { "path": "src/auth/login.ts" }, "metadata": { "filediff": "@@ -12,3 +12,4 @@\n ctx const TIMEOUT = 1000;\n-for (let i = 0; i < 5; i++) { await fetchToken({ timeout: TIMEOUT }); }\n+for (let i = 0; i < 3; i++) {\n+  await fetchToken({ timeout: TIMEOUT * 2 ** i }); // 指数退避\n+}\n" } } }, "time": 6 } } },
+
+    { "dt": 1100, "event": { "type": "message.part.updated", "properties": { "part": { "type": "file", "id": "f-report", "messageID": "ma1", "sessionID": "chat", "filename": "perf-report.html", "mime": "text/html", "url": "https://example.com/perf-report.html" }, "time": 7 } } },
+    { "dt": 400, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa3", "field": "text", "delta": "顺手生成了压测报告(见上方附件)。要不要我把超时阈值也从 1s 提到 2s?\n" } } },
+
+    { "dt": 800, "event": { "type": "question.asked", "properties": { "sessionID": "chat", "questionID": "q-threshold" } } },
+    { "dt": 1600, "dock": "answer" },
+
+    { "dt": 600, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa4", "field": "text", "delta": "好,保持 1s 不动。现在跑一遍登录集成测试验证。\n" } } },
+    { "dt": 500, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "t-test", "messageID": "ma1", "sessionID": "chat", "tool": "bash", "state": { "status": "error", "input": { "cmd": "npm test -- login" }, "error": "network flake: registry timeout(ECONNRESET)" } }, "time": 8 } } },
+    { "dt": 900, "event": { "type": "session.error", "properties": { "sessionID": "chat", "error": { "name": "APIError" } } } },
+    { "dt": 400, "event": { "type": "session.error", "properties": { "sessionID": "chat", "error": { "name": "APIError" } } } },
+    { "dt": 1200, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa5", "field": "text", "delta": "网络抖动导致一次失败,已自动重试:\n" } } },
+    { "dt": 500, "event": { "type": "message.part.updated", "properties": { "part": { "type": "tool", "id": "t-test", "messageID": "ma1", "sessionID": "chat", "tool": "bash", "state": { "status": "completed", "input": { "cmd": "npm test -- login" }, "output": "login.spec.ts: 12 passed (p99 340ms)" } }, "time": 9 } } },
+
+    { "dt": 1000, "event": { "type": "message.part.updated", "properties": { "part": { "type": "compaction", "id": "cmp1", "messageID": "ma1", "sessionID": "chat" }, "time": 10 } } },
+
+    { "dt": 900, "event": { "type": "message.part.delta", "properties": { "messageID": "ma1", "partID": "pa6", "field": "text", "delta": "修复完成:重试改指数退避(3 次),p99 从 8s 降到 340ms,测试全绿。\n" } } },
+    { "dt": 600, "event": { "type": "session.status", "properties": { "status": { "type": "idle" } } } },
+
+    { "dt": 1500, "user": { "text": "顺手把这次的结论记到 CHANGELOG 里。", "cps": 15, "holdMs": 500 } },
+    { "dt": 900, "event": { "type": "message.updated", "properties": { "info": { "id": "mu2", "role": "user", "sessionID": "chat" } } } },
+    { "dt": 60, "event": { "type": "message.part.updated", "properties": { "part": { "type": "text", "id": "pu2", "messageID": "mu2", "sessionID": "chat", "text": "顺手把这次的结论记到 CHANGELOG 里。" }, "time": 11 } } },
+    { "dt": 300, "event": { "type": "session.status", "properties": { "status": { "type": "busy" } } } },
+    { "dt": 500, "event": { "type": "message.updated", "properties": { "info": { "id": "ma2", "role": "assistant", "sessionID": "chat" } } } },
+    { "dt": 300, "event": { "type": "message.part.delta", "properties": { "messageID": "ma2", "partID": "pb1", "field": "text", "delta": "已追加:\n\n```md\n## fix\n- login: 重试指数退避(5→3 次),p99 8s → 340ms\n```\n" } } },
+    { "dt": 800, "event": { "type": "session.status", "properties": { "status": { "type": "idle" } } } }
+  ]
+}

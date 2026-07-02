@@ -1,0 +1,8 @@
+{
+  "steps": [
+    { "t": 0, "delta": "My Great Title" },
+    { "t": 200, "delta": "\n==" },
+    { "t": 360, "delta": "===" },
+    { "t": 520, "delta": "\n\nand the body follows." }
+  ]
+}

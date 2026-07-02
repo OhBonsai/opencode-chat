@@ -1,0 +1,11 @@
+{
+  "steps": [
+    { "t": 0, "delta": "# Release Notes\n\n" },
+    { "t": 160, "delta": "This build adds **streaming** morph " },
+    { "t": 320, "delta": "so reflows tween instead of jumping.\n\n" },
+    { "t": 480, "delta": "- glyph identity is stable\n" },
+    { "t": 640, "delta": "- `past` -> `current` interpolation\n\n" },
+    { "t": 800, "delta": "---\n\n" },
+    { "t": 960, "delta": "See the ADRs for details." }
+  ]
+}

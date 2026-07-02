@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "t": 0, "delta": "run " },
+    { "t": 120, "delta": "`car" },
+    { "t": 240, "delta": "go test --workspace" },
+    { "t": 360, "delta": "`" },
+    { "t": 480, "delta": " before pushing." }
+  ]
+}

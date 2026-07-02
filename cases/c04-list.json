@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "t": 0, "delta": "Shopping:\n\n" },
+    { "t": 140, "delta": "- apples\n" },
+    { "t": 280, "delta": "- bananas\n" },
+    { "t": 420, "delta": "- cherries\n" },
+    { "t": 560, "delta": "- dates and figs" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "steps": [
+    { "t": 0, "delta": "make this " },
+    { "t": 120, "delta": "**bo" },
+    { "t": 240, "delta": "ld and wide" },
+    { "t": 360, "delta": "**" },
+    { "t": 480, "delta": " then *ital" },
+    { "t": 600, "delta": "ic* too." }
+  ]
+}

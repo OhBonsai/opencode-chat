@@ -1,0 +1,11 @@
+{
+  "steps": [
+    { "t": 0, "delta": "example:\n\n" },
+    { "t": 140, "delta": "```rust\n" },
+    { "t": 280, "delta": "fn main() {\n" },
+    { "t": 420, "delta": "    let x = 42;\n" },
+    { "t": 560, "delta": "}\n" },
+    { "t": 700, "delta": "```" },
+    { "t": 840, "delta": "\n\nthat's it." }
+  ]
+}
